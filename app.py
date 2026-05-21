@@ -151,7 +151,8 @@ def t_parse(text):
                 e = c.setdefault("custom_rules", [])
                 for r in v:
                     if r not in e: e.append(r)
-            else: c[k] = v
+            elif v:  # never overwrite existing data with empty values
+                c[k] = v
         miss = _missing(c)
         if miss:
             return "Stored. Still missing: " + ", ".join(miss) + ". Ask the user for the missing items."
@@ -218,7 +219,7 @@ def _build_agent(key):
         TOOLS, ChatGroq(api_key=key, model=st.session_state.model, temperature=0),
         agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
         memory=ConversationBufferMemory(memory_key="chat_history", return_messages=True),
-        verbose=False, handle_parsing_errors=True, max_iterations=8,
+        verbose=False, handle_parsing_errors=True, max_iterations=10,
         agent_kwargs={"prefix": _PREFIX},
     )
 
