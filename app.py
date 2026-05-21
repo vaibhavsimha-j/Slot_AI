@@ -10,15 +10,19 @@ from langchain.agents import initialize_agent, AgentType, Tool
 from langchain.memory import ConversationBufferMemory
 from langchain_groq import ChatGroq
 
-MODEL = "llama-3.3-70b-versatile"
+MODELS = {
+    "llama-3.1-8b-instant":    "Llama 3.1 8B — faster, ~500K tokens/day free",
+    "llama-3.3-70b-versatile": "Llama 3.3 70B — best quality, 100K tokens/day free",
+}
 st.set_page_config(page_title="SLOT AI", page_icon="📅", layout="wide")
 
-for k, v in dict(messages=[], constraints={}, timetable={}, agent=None, api_key="", tt_updated=False, key_changed=False).items():
+for k, v in dict(messages=[], constraints={}, timetable={}, agent=None, api_key="",
+                 tt_updated=False, key_changed=False, model="llama-3.1-8b-instant").items():
     st.session_state.setdefault(k, v)
 if not st.session_state.api_key and os.getenv("GROQ_API_KEY"):
     st.session_state.api_key = os.getenv("GROQ_API_KEY", "")
 
-def _llm(t: float = 0.0): return ChatGroq(api_key=st.session_state.api_key, model=MODEL, temperature=t)
+def _llm(t: float = 0.0): return ChatGroq(api_key=st.session_state.api_key, model=st.session_state.model, temperature=t)
 def _strip(s): return re.sub(r"\n?```$", "", re.sub(r"^```[a-z]*\n?", "", s.strip())).strip()
 
 def _missing(c):
@@ -77,8 +81,8 @@ def _solve(c):
 
     if custom:
         raw = _strip(_llm().invoke(
-            "Fix this timetable to respect these rules:\n" + "\n".join(f"- {r}" for r in custom) +
-            f"\n\nJSON:\n{json.dumps(tt)}\n\nReturn ONLY valid JSON, no explanation:"
+            "Fix this timetable JSON to respect:\n" + "\n".join(f"- {r}" for r in custom) +
+            f"\nJSON:{json.dumps(tt,separators=(',',':'))}\nReturn ONLY valid JSON:"
         ).content)
         try: tt = json.loads(raw)
         except: pass
@@ -168,8 +172,8 @@ def t_display(_):
 def t_edit(instr):
     if not st.session_state.timetable: return "No timetable to edit yet."
     raw = _strip(_llm().invoke(
-        f"Apply this edit and return ONLY valid JSON:\nTimetable:\n"
-        f"{json.dumps(st.session_state.timetable, indent=2)}\nEdit: {instr}\n\nUpdated JSON:"
+        f"Apply this edit and return ONLY valid JSON (no spaces):\n"
+        f"Timetable:{json.dumps(st.session_state.timetable,separators=(',',':'))}\nEdit:{instr}\nJSON:"
     ).content)
     try:
         st.session_state.timetable = json.loads(raw); st.session_state.tt_updated = True
@@ -210,10 +214,10 @@ Tools:\
 
 def _build_agent(key):
     return initialize_agent(
-        TOOLS, ChatGroq(api_key=key, model=MODEL, temperature=0),
+        TOOLS, ChatGroq(api_key=key, model=st.session_state.model, temperature=0),
         agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
         memory=ConversationBufferMemory(memory_key="chat_history", return_messages=True),
-        verbose=False, handle_parsing_errors=True, max_iterations=15,
+        verbose=False, handle_parsing_errors=True, max_iterations=5,
         agent_kwargs={"prefix": _PREFIX},
     )
 
@@ -224,8 +228,12 @@ with st.sidebar:
     st.header("⚙️ Setup")
     key_in = st.text_input("Groq API Key", type="password", value=st.session_state.api_key,
                            placeholder="gsk_...", help="Get a free key at console.groq.com")
-    if key_in != st.session_state.api_key:
+    model_in = st.selectbox("Model", list(MODELS.keys()),
+                            index=list(MODELS.keys()).index(st.session_state.model),
+                            format_func=lambda m: MODELS[m])
+    if key_in != st.session_state.api_key or model_in != st.session_state.model:
         st.session_state.api_key = key_in
+        st.session_state.model = model_in
         st.session_state.agent = None
         if st.session_state.timetable:
             st.session_state.key_changed = True
