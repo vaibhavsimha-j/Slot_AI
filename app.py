@@ -13,7 +13,7 @@ from langchain_groq import ChatGroq
 MODEL = "llama-3.3-70b-versatile"
 st.set_page_config(page_title="SLOT AI", page_icon="📅", layout="wide")
 
-for k, v in dict(messages=[], constraints={}, timetable={}, agent=None, api_key="", tt_updated=False).items():
+for k, v in dict(messages=[], constraints={}, timetable={}, agent=None, api_key="", tt_updated=False, key_changed=False).items():
     st.session_state.setdefault(k, v)
 if not st.session_state.api_key and os.getenv("GROQ_API_KEY"):
     st.session_state.api_key = os.getenv("GROQ_API_KEY", "")
@@ -225,10 +225,13 @@ with st.sidebar:
     key_in = st.text_input("Groq API Key", type="password", value=st.session_state.api_key,
                            placeholder="gsk_...", help="Get a free key at console.groq.com")
     if key_in != st.session_state.api_key:
-        st.session_state.api_key = key_in; st.session_state.agent = None
+        st.session_state.api_key = key_in
+        st.session_state.agent = None
+        if st.session_state.timetable:
+            st.session_state.key_changed = True
     if st.session_state.api_key and st.session_state.agent is None:
-        with st.spinner("Starting agent…"):
-            try: st.session_state.agent = _build_agent(st.session_state.api_key); st.success("Agent ready")
+        with st.spinner("Refreshing agent…"):
+            try: st.session_state.agent = _build_agent(st.session_state.api_key); st.success("✅ Agent ready")
             except Exception as e: st.error(f"Agent init failed: {e}")
 
     st.divider()
@@ -253,6 +256,13 @@ with st.sidebar:
 
 # ── Chat ───────────────────────────────────────────────────────────────────────
 st.subheader("💬 Chat with SLOT AI")
+if st.session_state.key_changed:
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": "🔑 API key updated — agent refreshed with new key. Your timetable and history are preserved. Continue where you left off!",
+        "timetable": None
+    })
+    st.session_state.key_changed = False
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
