@@ -11,13 +11,13 @@ from langchain.memory import ConversationBufferMemory
 from langchain_groq import ChatGroq
 
 MODELS = {
-    "llama-3.1-8b-instant":    "Llama 3.1 8B — faster, ~500K tokens/day free",
-    "llama-3.3-70b-versatile": "Llama 3.3 70B — best quality, 100K tokens/day free",
+    "llama-3.3-70b-versatile": "Llama 3.3 70B — best quality, 100K tokens/day (default)",
+    "llama-3.1-8b-instant":    "Llama 3.1 8B — if 70B hits limit, switch here (~500K/day)",
 }
 st.set_page_config(page_title="SLOT AI", page_icon="📅", layout="wide")
 
 for k, v in dict(messages=[], constraints={}, timetable={}, agent=None, api_key="",
-                 tt_updated=False, key_changed=False, model="llama-3.1-8b-instant").items():
+                 tt_updated=False, key_changed=False, model="llama-3.3-70b-versatile").items():
     st.session_state.setdefault(k, v)
 if not st.session_state.api_key and os.getenv("GROQ_API_KEY"):
     st.session_state.api_key = os.getenv("GROQ_API_KEY", "")
@@ -128,6 +128,7 @@ def t_parse(text):
         "  'Subject-Professor' or 'Subject:Professor' notation — INVERT it.\n"
         "  Example: 'AI-Vaibhav, ML-Vaibhav, DSA-Simha' → {\"Vaibhav\":[\"AI\",\"ML\"],\"Simha\":[\"DSA\"]}\n"
         "- rooms: shared spaces (e.g. A, B, C, D) — NOT subject-specific, just a list\n"
+        "- Copy professor names EXACTLY as written — do NOT add 'Dr.', 'Prof.', or any title prefix\n"
         "- morning_slots: slots before the first break\n"
         "- room_restrictions: subject→rooms it CANNOT use (only if user says so)\n"
         "- professor_unavailability: prof→days absent/unavailable\n"
@@ -217,7 +218,7 @@ def _build_agent(key):
         TOOLS, ChatGroq(api_key=key, model=st.session_state.model, temperature=0),
         agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
         memory=ConversationBufferMemory(memory_key="chat_history", return_messages=True),
-        verbose=False, handle_parsing_errors=True, max_iterations=5,
+        verbose=False, handle_parsing_errors=True, max_iterations=8,
         agent_kwargs={"prefix": _PREFIX},
     )
 
