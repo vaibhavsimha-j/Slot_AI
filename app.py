@@ -74,9 +74,11 @@ def _solve(c):
             tt[day][slot] = {r: asgn.get(r, {"subject": "FREE", "professor": ""}) for r in rooms}
             prev = {v["professor"] for v in asgn.values()}
 
-    if custom:
+    _trivial = {"one subject", "respect break", "each cell", "per room per time", "per slot"}
+    real_custom = [r for r in custom if not any(t in r.lower() for t in _trivial)]
+    if real_custom:
         raw = _strip(_llm().invoke(
-            "Fix this timetable JSON to respect:\n" + "\n".join(f"- {r}" for r in custom) +
+            "Fix this timetable JSON to respect:\n" + "\n".join(f"- {r}" for r in real_custom) +
             f"\nJSON:{json.dumps(tt,separators=(',',':'))}\nReturn ONLY valid JSON:"
         ).content)
         try: tt = json.loads(raw)
@@ -192,13 +194,11 @@ def _handle(prompt):
     if result == "ok":
         changed = st.session_state.constraints != c_snap
         wants_gen = bool(pw & {"generate", "create", "make", "build", "regenerate", "redo"})
-        if changed or wants_gen:
+        if changed or wants_gen or not tt:
             gen = t_generate()
             return "Your timetable is ready!" if gen == "generated" else gen
-        if tt:
-            st.session_state.tt_updated = True
-            return "Here's your current timetable."
-        return "I'm SLOT AI — share your professors, subjects, rooms, slots, and days to get started."
+        st.session_state.tt_updated = True
+        return "Here's your current timetable."
 
     if result.startswith("missing:"):
         return "I still need: **" + result[8:] + "**. Please share that."
