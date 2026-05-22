@@ -10,10 +10,7 @@ from langchain.agents import initialize_agent, AgentType, Tool
 from langchain.memory import ConversationBufferMemory
 from langchain_groq import ChatGroq
 
-MODELS = {
-    "llama-3.3-70b-versatile": "Llama 3.3 70B — best quality, 100K tokens/day (default)",
-    "llama-3.1-8b-instant":    "Llama 3.1 8B — if 70B hits limit, switch here (~500K/day)",
-}
+MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
 st.set_page_config(page_title="SLOT AI", page_icon="📅", layout="wide")
 
 for k, v in dict(messages=[], constraints={}, timetable={}, agent=None, api_key="",
@@ -230,9 +227,7 @@ with st.sidebar:
     st.header("⚙️ Setup")
     key_in = st.text_input("Groq API Key", type="password", value=st.session_state.api_key,
                            placeholder="gsk_...", help="Get a free key at console.groq.com")
-    model_in = st.selectbox("Model", list(MODELS.keys()),
-                            index=list(MODELS.keys()).index(st.session_state.model),
-                            format_func=lambda m: MODELS[m])
+    model_in = st.selectbox("Model", MODELS, index=MODELS.index(st.session_state.model))
     if key_in != st.session_state.api_key or model_in != st.session_state.model:
         st.session_state.api_key = key_in
         st.session_state.model = model_in
@@ -299,7 +294,7 @@ if prompt := st.chat_input("Describe your timetable — professors, subjects, ro
                 except Exception as e:
                     err = str(e)
                     if "429" in err or "rate_limit" in err.lower():
-                        reply = "⚠️ Groq API daily token limit reached. Please wait a few minutes and try again, or upgrade at console.groq.com/settings/billing."
+                        reply = "⚠️ Groq rate limit hit (per-minute or daily). Wait ~1 minute and try again, or switch to llama-3.1-8b-instant in the sidebar."
                     else:
                         reply = f"Something went wrong: {e}"
         st.markdown(reply)
