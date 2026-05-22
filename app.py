@@ -219,7 +219,7 @@ def _build_agent(key):
         TOOLS, ChatGroq(api_key=key, model=st.session_state.model, temperature=0),
         agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
         memory=ConversationBufferMemory(memory_key="chat_history", return_messages=True),
-        verbose=False, handle_parsing_errors=True, max_iterations=10,
+        verbose=False, handle_parsing_errors=True, max_iterations=15,
         agent_kwargs={"prefix": _PREFIX},
     )
 
