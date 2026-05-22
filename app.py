@@ -1,20 +1,18 @@
 """SLOT AI — School Timetable Scheduler
-pip install streamlit langchain==0.2.16 langchain-groq==0.1.9 langchain-community==0.2.16 pandas openpyxl fpdf2
+pip install streamlit langchain-groq==0.1.9 pandas openpyxl fpdf2
 streamlit run app.py
 """
 import os, json, re, random, copy
 import streamlit as st
 import pandas as pd
 from io import BytesIO
-from langchain.agents import initialize_agent, AgentType, Tool
-from langchain.memory import ConversationBufferMemory
 from langchain_groq import ChatGroq
 
 MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
 st.set_page_config(page_title="SLOT AI", page_icon="📅", layout="wide")
 
-for k, v in dict(messages=[], constraints={}, timetable={}, agent=None, api_key="",
-                 tt_updated=False, key_changed=False, model="llama-3.3-70b-versatile").items():
+for k, v in dict(messages=[], constraints={}, timetable={}, api_key="",
+                 model="llama-3.3-70b-versatile", tt_updated=False).items():
     st.session_state.setdefault(k, v)
 if not st.session_state.api_key and os.getenv("GROQ_API_KEY"):
     st.session_state.api_key = os.getenv("GROQ_API_KEY", "")
@@ -112,7 +110,7 @@ def _export_excel():
             df.to_excel(w, sheet_name=day[:31])
     return buf.getvalue()
 
-# ── Agent tools ────────────────────────────────────────────────────────────────
+# ── Core ───────────────────────────────────────────────────────────────────────
 def t_parse(text):
     raw = _strip(_llm(0.1).invoke(
         "Extract scheduling constraints as JSON. Allowed keys only:\n"
@@ -148,77 +146,63 @@ def t_parse(text):
                 e = c.setdefault("custom_rules", [])
                 for r in v:
                     if r not in e: e.append(r)
-            elif v:  # never overwrite existing data with empty values
+            elif v:
                 c[k] = v
         miss = _missing(c)
-        if miss:
-            return "Stored. Still missing: " + ", ".join(miss) + ". Ask the user for the missing items."
-        return "All required info collected (teachers, slots, rooms, days). Call generate_timetable now."
-    except json.JSONDecodeError: return f"Parse failed: {raw}"
+        return ("missing:" + ", ".join(miss)) if miss else "ok"
+    except json.JSONDecodeError:
+        return "error"
 
-def t_generate(_):
+def t_generate():
     c = st.session_state.constraints; miss = _missing(c)
-    if miss: return "Still need:\n" + "\n".join(f"- {m}" for m in miss)
+    if miss: return "missing:" + ", ".join(miss)
     tt = _solve(c)
-    if not tt: return "Could not generate. Check constraints."
+    if not tt: return "Could not generate — check your constraints."
     st.session_state.timetable = tt; st.session_state.tt_updated = True
-    return "Timetable generated!"
-
-def t_display(_):
-    if not st.session_state.timetable: return "No timetable yet. Generate one first!"
-    st.session_state.tt_updated = True; return "Displaying timetable."
+    return "generated"
 
 def t_edit(instr):
-    if not st.session_state.timetable: return "No timetable to edit yet."
     raw = _strip(_llm().invoke(
-        f"Apply this edit and return ONLY valid JSON (no spaces):\n"
+        "Apply this edit and return ONLY valid JSON (no spaces):\n"
         f"Timetable:{json.dumps(st.session_state.timetable,separators=(',',':'))}\nEdit:{instr}\nJSON:"
     ).content)
     try:
         st.session_state.timetable = json.loads(raw); st.session_state.tt_updated = True
-        return "Timetable updated!"
+        return "updated"
     except: return "Edit failed — invalid JSON returned."
 
-TOOLS = [
-    Tool("parse_constraints", t_parse,
-         "Extract and store ALL scheduling info from user text: professors, subjects, rooms, slots, "
-         "days, breaks, unavailability, room restrictions, and any custom rules. "
-         "Call this for ANY scheduling detail the user mentions."),
-    Tool("generate_timetable", t_generate,
-         "Build the full weekly timetable from stored constraints. Call immediately once all "
-         "required info (teachers, slots, rooms, days) is present, or when user asks to generate."),
-    Tool("display_timetable", t_display,
-         "Show the current timetable. Call when user says show/display/view/print/see."),
-    Tool("edit_timetable", t_edit,
-         "Apply a natural-language edit to the existing timetable. Input: the edit instruction."),
-]
+def _handle(prompt):
+    p = prompt.lower(); pw = set(p.split()); tt = st.session_state.timetable
 
-_PREFIX = """\
-You are SLOT AI — a school timetable scheduling assistant. You adapt to whatever the teacher provides.
+    # Pure display request
+    if tt and pw & {"show", "display", "view", "print"} and \
+       not any(w in p for w in ["unavail", "cannot", "restrict", "professor", "teacher", "subject", "slot", "room"]):
+        st.session_state.tt_updated = True
+        return "Here's your current timetable."
 
-Rules:
-1. ANY scheduling detail in the user message → call parse_constraints immediately.
-2. parse_constraints tells you exactly what is still missing. Trust it — do NOT guess what is missing.
-3. If parse_constraints says "All required info collected" → call generate_timetable immediately.
-4. If info is missing → ask the user ONE question for ONE missing field. Nothing else.
-5. Rooms (e.g. A, B, C, D) are SHARED spaces — any subject can go in any room. Never ask which
-   room is "assigned to" a subject unless the user explicitly said so.
-6. "show"/"display"/"view"/"print"/"see" → call display_timetable.
-7. "swap"/"move"/"change"/"fix"/"remove"/"update" → call edit_timetable.
-8. New constraint or unavailability → parse_constraints, then regenerate.
-9. Never invent or assume scheduling details. After a tool call, reply in one sentence.
+    # Cell-level swap / move
+    if tt and pw & {"swap", "move", "replace", "switch"}:
+        r = t_edit(prompt)
+        return "Done — timetable updated!" if r == "updated" else r
 
-Tools:\
-"""
+    # Parse constraints, then auto-generate if ready
+    c_snap = copy.deepcopy(st.session_state.constraints)
+    result = t_parse(prompt)
 
-def _build_agent(key):
-    return initialize_agent(
-        TOOLS, ChatGroq(api_key=key, model=st.session_state.model, temperature=0),
-        agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-        memory=ConversationBufferMemory(memory_key="chat_history", return_messages=True),
-        verbose=False, handle_parsing_errors=True, max_iterations=15,
-        agent_kwargs={"prefix": _PREFIX},
-    )
+    if result == "ok":
+        changed = st.session_state.constraints != c_snap
+        wants_gen = bool(pw & {"generate", "create", "make", "build", "regenerate", "redo"})
+        if changed or wants_gen:
+            gen = t_generate()
+            return "Your timetable is ready!" if gen == "generated" else gen
+        if tt:
+            st.session_state.tt_updated = True
+            return "Here's your current timetable."
+        return "I'm SLOT AI — share your professors, subjects, rooms, slots, and days to get started."
+
+    if result.startswith("missing:"):
+        return "I still need: **" + result[8:] + "**. Please share that."
+    return "I couldn't parse that — please try rephrasing."
 
 # ── UI ─────────────────────────────────────────────────────────────────────────
 st.title("📅 SLOT AI")
@@ -228,20 +212,12 @@ with st.sidebar:
     key_in = st.text_input("Groq API Key", type="password", value=st.session_state.api_key,
                            placeholder="gsk_...", help="Get a free key at console.groq.com")
     model_in = st.selectbox("Model", MODELS, index=MODELS.index(st.session_state.model))
-    if key_in != st.session_state.api_key or model_in != st.session_state.model:
-        st.session_state.api_key = key_in
-        st.session_state.model = model_in
-        st.session_state.agent = None
-        if st.session_state.timetable:
-            st.session_state.key_changed = True
-    if st.session_state.api_key and st.session_state.agent is None:
-        with st.spinner("Refreshing agent…"):
-            try: st.session_state.agent = _build_agent(st.session_state.api_key); st.success("✅ Agent ready")
-            except Exception as e: st.error(f"Agent init failed: {e}")
+    st.session_state.api_key = key_in
+    st.session_state.model = model_in
 
     st.divider()
     if st.button("🗑️ Reset Everything", type="secondary", use_container_width=True):
-        st.session_state.update(messages=[], constraints={}, timetable={}, agent=None, tt_updated=False)
+        st.session_state.update(messages=[], constraints={}, timetable={}, tt_updated=False)
         st.rerun()
 
     st.divider()
@@ -261,13 +237,6 @@ with st.sidebar:
 
 # ── Chat ───────────────────────────────────────────────────────────────────────
 st.subheader("💬 Chat with SLOT AI")
-if st.session_state.key_changed:
-    st.session_state.messages.append({
-        "role": "assistant",
-        "content": "🔑 API key updated — agent refreshed with new key. Your timetable and history are preserved. Continue where you left off!",
-        "timetable": None
-    })
-    st.session_state.key_changed = False
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
@@ -285,18 +254,14 @@ if prompt := st.chat_input("Describe your timetable — professors, subjects, ro
     st.session_state.tt_updated = False
     with st.chat_message("assistant"):
         with st.spinner("Thinking…"):
-            if st.session_state.agent is None:
-                reply = "Agent not ready — check your Groq API key in the sidebar."
-            else:
-                try:
-                    result = st.session_state.agent.invoke({"input": prompt})
-                    reply = result.get("output", str(result))
-                except Exception as e:
-                    err = str(e)
-                    if "429" in err or "rate_limit" in err.lower():
-                        reply = "⚠️ Groq rate limit hit (per-minute or daily). Wait ~1 minute and try again, or switch to llama-3.1-8b-instant in the sidebar."
-                    else:
-                        reply = f"Something went wrong: {e}"
+            try:
+                reply = _handle(prompt)
+            except Exception as e:
+                err = str(e)
+                if "429" in err or "rate_limit" in err.lower():
+                    reply = "⚠️ Rate limit hit. Wait ~1 minute and try again, or switch to llama-3.1-8b-instant in the sidebar."
+                else:
+                    reply = f"Something went wrong: {e}"
         st.markdown(reply)
         tt_snap = copy.deepcopy(st.session_state.timetable) if st.session_state.tt_updated else None
         if tt_snap: _show_tt(tt_snap)
