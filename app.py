@@ -47,7 +47,6 @@ def _show_tt(tt):
 def _solve(c):
     sp = {s: p for p, ss in c.get("teachers", {}).items() for s in ss}
     days, rooms, slots = c["days"], c["rooms"], c["slots"]
-    morning = set(c.get("morning_slots", [])); mo = set(c.get("morning_only_subjects", []))
     restr = c.get("room_restrictions", {}); unavail = c.get("professor_unavailability", {})
     custom = c.get("custom_rules", []); tt = {}
 
@@ -55,7 +54,7 @@ def _solve(c):
         tt[day] = {}
         off = {p for p, ds in unavail.items() if day in ds}; prev = set()
         for slot in slots:
-            avail = [s for s in sp if sp[s] not in off and (s not in mo or slot in morning)]
+            avail = [s for s in sp if sp[s] not in off]
 
             def bt(rl, used, out, relax=False, _a=avail, _p=prev):
                 if not rl: return True
@@ -117,8 +116,8 @@ def _export_excel():
 def t_parse(text):
     raw = _strip(_llm(0.1).invoke(
         "Extract scheduling constraints as JSON. Allowed keys only:\n"
-        '{"teachers":{"Prof":["Subj"]},"rooms":[],"slots":[],"days":[],"breaks":[],'
-        '"morning_slots":[],"morning_only_subjects":[],"room_restrictions":{"Subj":["Room"]},'
+        '{"teachers":{"Prof":["Subj"]},"rooms":[],"slots":[],"days":[],'
+        '"room_restrictions":{"Subj":["Room"]},'
         '"professor_unavailability":{"Prof":["Day"]},'
         '"custom_rules":["any other constraint verbatim as a plain string"]}\n\n'
         "CRITICAL rules:\n"
@@ -127,11 +126,11 @@ def t_parse(text):
         "  Example: 'AI-Vaibhav, ML-Vaibhav, DSA-Simha' → {\"Vaibhav\":[\"AI\",\"ML\"],\"Simha\":[\"DSA\"]}\n"
         "- rooms: shared spaces (e.g. A, B, C, D) — NOT subject-specific, just a list\n"
         "- Copy professor names EXACTLY as written — do NOT add 'Dr.', 'Prof.', or any title prefix\n"
-        "- morning_slots: slots before the first break\n"
+        "- slots: ONLY the actual teaching time slots, NEVER include break ranges in this list\n"
         "- room_restrictions: subject→rooms it CANNOT use (only if user says so)\n"
         "- professor_unavailability: prof→days absent/unavailable\n"
         "- custom_rules: ALL other constraints verbatim (frequency limits, consecutive slots, etc.)\n"
-        "- Exclude break ranges from slots; omit keys not mentioned\n\n"
+        "- Omit keys not mentioned; breaks are handled automatically\n\n"
         f"Text: {text}\n\nJSON:"
     ).content)
     try:
