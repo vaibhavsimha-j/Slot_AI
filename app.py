@@ -89,18 +89,19 @@ def _solve(c):
 def _export_pdf():
     try:
         from fpdf import FPDF
+        def _s(t): return str(t).encode("latin-1", "replace").decode("latin-1")
         pdf = FPDF()
         for day, df in _to_dfs(st.session_state.timetable).items():
             pdf.add_page(); pdf.set_font("Helvetica", "B", 14)
-            pdf.cell(0, 10, day); pdf.ln()
+            pdf.cell(0, 10, _s(day)); pdf.ln()
             pdf.set_font("Helvetica", size=7)
             cols = ["Time"] + list(df.columns); w = 190 / len(cols)
             pdf.set_fill_color(220, 220, 220)
-            for col in cols: pdf.cell(w, 7, str(col), border=1, fill=True)
+            for col in cols: pdf.cell(w, 7, _s(col), border=1, fill=True)
             pdf.ln()
             for idx, row in df.iterrows():
-                pdf.cell(w, 7, str(idx), border=1)
-                for v in row: pdf.cell(w, 7, str(v)[:20], border=1)
+                pdf.cell(w, 7, _s(idx), border=1)
+                for v in row: pdf.cell(w, 7, _s(v)[:20], border=1)
                 pdf.ln()
         return bytes(pdf.output())
     except ImportError: return None
