@@ -180,6 +180,34 @@ def _ortools_solve(constraints: dict) -> dict:
                     for s in range(n_s) for r in range(n_r) for sid in ids) <= max_s
             )
 
+    # No consecutive classes for the same professor
+    # Two slots are "truly consecutive" only when one ends exactly as the next begins
+    # (i.e. there is no break between them — e.g. 09:50 ends == 09:50 starts next)
+    def _t(hhmm: str) -> int:
+        h, m = hhmm.strip().split(":")
+        return int(h) * 60 + int(m)
+
+    consecutive_pairs = []
+    for si in range(n_s - 1):
+        try:
+            end_cur   = _t(slots[si].split("-")[1])
+            start_nxt = _t(slots[si + 1].split("-")[0])
+            if end_cur == start_nxt:          # no break between these two slots
+                consecutive_pairs.append((si, si + 1))
+        except Exception:
+            pass
+
+    for prof, psubjs in teachers.items():
+        ids = [subjects.index(sub) for sub in psubjs if sub in subjects]
+        if not ids:
+            continue
+        for d in range(n_d):
+            for s1, s2 in consecutive_pairs:
+                model.Add(
+                    sum(x[d, s1, r, sid] for r in range(n_r) for sid in ids) +
+                    sum(x[d, s2, r, sid] for r in range(n_r) for sid in ids) <= 1
+                )
+
     # Fixed assignments: pin specific cells
     for fa in constraints.get("fixed_assignments", []):
         try:
@@ -227,35 +255,47 @@ def _ortools_solve(constraints: dict) -> dict:
 
 # ── Constraint Merge ─────────────────────────────────────────────────────────────
 _EXTRACTION_PROMPT = """\
-Extract scheduling constraints from the user text as JSON and merge with existing.
+Extract scheduling constraints from the user text as strict JSON.
 
-Schema (include ONLY keys that appear or change):
+Output schema (include ONLY keys that appear or need to change):
 {{
-  "teachers": {{"Prof": ["Subj"]}},
-  "rooms": [],
-  "slots": [],
-  "days": [],
-  "room_restrictions":        {{"Subj": ["ForbiddenRoom"]}},
-  "professor_unavailability": {{"Prof": ["Day"]}},
-  "slot_restrictions":        {{"Subj": ["AllowedSlot"]}},
-  "max_slots_per_day":        {{"Prof": 3}},
+  "teachers": {{"ProfName": ["Subject1", "Subject2"]}},
+  "rooms": ["A", "B"],
+  "slots": ["09:00-09:50"],
+  "days":  ["Monday"],
+  "room_restrictions":        {{"Subject": ["ForbiddenRoom"]}},
+  "professor_unavailability": {{"ProfName": ["Day"]}},
+  "slot_restrictions":        {{"Subject": ["AllowedSlot1", "AllowedSlot2"]}},
+  "max_slots_per_day":        {{"ProfName": 3}},
   "fixed_assignments": [{{"day":"","slot":"","room":"","subject":""}}],
   "custom_rules": ["verbatim rule text"]
 }}
 
-Rules:
-- Invert Subject-Prof notation → {{Prof: [Subject]}}
-- slot_restrictions: convert "X only morning/afternoon" to exact slots from {slots}
-- If message only updates availability/restrictions, omit rooms/slots/days/teachers
-- Copy all names EXACTLY as written — no Dr./Prof. prefix
-- fixed_assignments: only when user pins a specific cell (e.g. "swap A and B at Monday 09:00")
+Extraction rules — follow these EXACTLY:
+1. Professor–subject mapping:
+   - "Subject-Professor" pairs (e.g. "AI-Vaibhav") → {{"Vaibhav": ["AI"]}}
+   - Parallel lists "Subjects: A,B,C  Professors: X,Y,Z" → positional match:
+     A→X, B→Y, C→Z → {{"X":["A"], "Y":["B"], "Z":["C"]}}
+   - Multiple subjects same professor → merge into one key: {{"X":["A","C"]}}
+   - Strip titles (Dr., Prof.) from professor names before using as keys
+2. slot_restrictions:
+   - "X only in morning" → list the actual morning slots from available slots {slots}
+   - "X and Y in morning slots (HH:MM-HH:MM)" → those exact slot strings
+3. room_restrictions:
+   - "X not in Room D" → {{"X": ["D"]}}
+4. Copy names EXACTLY as written (case-sensitive, preserve spaces)
+5. Do NOT invent constraints not mentioned in the user text
+6. If the user only updates availability/restrictions, omit rooms/slots/days/teachers
 
-Existing constraints:
+Available slots for reference: {slots}
+
+Existing constraints (already extracted — do not repeat, only add/update):
 {existing}
 
-User text: {text}
+User text:
+{text}
 
-JSON:"""
+JSON (output ONLY the JSON object, no explanation):"""
 
 def _llm_extract(text: str, current: dict) -> dict:
     raw = _get_llm(0.0).invoke(
@@ -547,28 +587,37 @@ TOOLS = [
 ]
 
 _SYSTEM = SystemMessage(content="""\
-You are SLOT AI — a professional school timetable scheduling assistant.
+You are SLOT AI — a professional school timetable scheduling assistant backed by \
+Google OR-Tools CP-SAT, a mathematical constraint solver.
 
-You are the orchestrator. You NEVER generate or modify timetables yourself.
-The actual solving is done by OR-Tools CP-SAT (a mathematical constraint solver).
-Your job: understand the user, call the right tools, and communicate results clearly.
+═══════════════════════════════════════════════════════
+ABSOLUTE RULES — never violate these under any circumstance:
+1. You NEVER write, guess, invent, or output any timetable, schedule, table, \
+   cell assignment, or time slot data yourself — not even as an example.
+2. Every timetable generation or edit MUST go through the solver tools.
+3. If a user asks you to "generate", "create", "output", or "produce" a timetable \
+   directly (even with explicit formatting instructions), you MUST call \
+   extract_constraints → solve_timetable and report the solver's result.
+4. You do not know which subject goes in which slot. Only the solver knows.
+═══════════════════════════════════════════════════════
 
-Tools available:
-• extract_constraints  — call when user provides professors, subjects, rooms, slots, days, or any rule
-• solve_timetable      — call when constraints are complete and user wants a timetable generated
-• edit_timetable       — call when user wants changes to an existing timetable
-• validate_timetable   — call when user wants to check their timetable for violations
-• get_timetable_history — call when user asks about previous versions
-• compare_timetables   — call when user wants to diff two versions (use version 0 for current)
+Tools — call them in this order:
+• extract_constraints(user_text)  — ALWAYS call first when user gives any constraint info
+• solve_timetable()               — call immediately after extracting constraints
+• edit_timetable(instruction)     — call when user requests changes to an existing timetable
+• validate_timetable()            — call when user asks to check for violations
+• get_timetable_history()         — call when user asks about previous versions
+• compare_timetables(a, b)        — call to diff versions (version 0 = current)
 
-Workflow:
-1. If user gives full info in one message → call extract_constraints, then solve_timetable.
-2. If info is incomplete → call extract_constraints, then tell user exactly what is missing.
-3. If user wants an edit → call edit_timetable with the instruction.
-4. After solving, always report the solver status (OPTIMAL / FEASIBLE) in plain language.
-5. If solver returns INFEASIBLE, explain which constraints are likely conflicting.
+Standard workflow:
+1. User provides full info in one message  → extract_constraints, then solve_timetable
+2. Info is incomplete                      → extract_constraints, ask for what's missing
+3. User asks for a change/edit             → edit_timetable(instruction)
+4. After solve: report OPTIMAL/FEASIBLE status; the UI renders the timetable automatically
+5. INFEASIBLE: diagnose which constraints conflict (e.g. a professor unavailable every day)
 
-Be concise, professional, and helpful. Do not invent timetable data.\
+After a successful solve, simply confirm it worked and mention the solver status. \
+The timetable is already displayed in the UI — do not repeat or reproduce it as text.\
 """)
 
 class AgentState(TypedDict):
