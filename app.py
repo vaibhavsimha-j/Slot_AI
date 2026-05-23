@@ -51,10 +51,10 @@ def _s() -> dict:
 
 # ── Utilities ───────────────────────────────────────────────────────────────────
 def _get_llm(t: float = 0.0) -> ChatGroq:
-    s = _s()
+    # api_key is injected into os.environ["GROQ_API_KEY"] before every agent invocation
+    # so ChatGroq picks it up automatically — avoids asyncio context propagation issues
     return ChatGroq(
-        api_key=s.get("api_key", ""),
-        model=s.get("model", MODELS[0]),
+        model=_s().get("model", MODELS[0]),
         temperature=t,
     )
 
@@ -700,6 +700,9 @@ if prompt := st.chat_input("Describe your timetable — professors, rooms, slots
     st.session_state.display_messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
+
+    # Inject API key into env so ChatGroq finds it regardless of async context
+    os.environ["GROQ_API_KEY"] = st.session_state.api_key
 
     # Sync session_state → thread-safe store before entering async agent context
     tid = st.session_state.thread_id
