@@ -130,7 +130,8 @@ def t_parse(text):
         "- room_restrictions: subject→rooms it CANNOT use (only if user says so)\n"
         "- professor_unavailability: prof→days absent/unavailable\n"
         "- custom_rules: ALL other constraints verbatim (frequency limits, consecutive slots, etc.)\n"
-        "- Omit keys not mentioned; breaks are handled automatically\n\n"
+        "- Omit keys not mentioned; breaks are handled automatically\n"
+        "- If this message only updates availability, restrictions, or rules — do NOT extract rooms, slots, days, or teachers; omit those keys entirely\n\n"
         f"Text: {text}\n\nJSON:"
     ).content)
     try:
@@ -149,7 +150,10 @@ def t_parse(text):
                 for r in v:
                     if r not in e: e.append(r)
             elif v:
-                c[k] = v
+                if k in ("rooms", "slots", "days") and c.get(k):
+                    pass
+                else:
+                    c[k] = v
         miss = _missing(c)
         return ("missing:" + ", ".join(miss)) if miss else "ok"
     except json.JSONDecodeError:
