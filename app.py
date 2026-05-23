@@ -638,24 +638,24 @@ if "agent" not in st.session_state:
 def _export_pdf():
     try:
         from fpdf import FPDF
-        _s = lambda t: str(t).encode("latin-1", "replace").decode("latin-1")
+        _enc = lambda t: str(t).encode("latin-1", "replace").decode("latin-1")
         pdf = FPDF()
         for day, df in _to_dfs(st.session_state.timetable).items():
             pdf.add_page()
             pdf.set_font("Helvetica", "B", 14)
-            pdf.cell(0, 10, _s(day))
+            pdf.cell(0, 10, _enc(day))
             pdf.ln()
             pdf.set_font("Helvetica", size=7)
             cols = ["Time"] + list(df.columns)
             w = 190 / len(cols)
             pdf.set_fill_color(220, 220, 220)
             for col in cols:
-                pdf.cell(w, 7, _s(col), border=1, fill=True)
+                pdf.cell(w, 7, _enc(col), border=1, fill=True)
             pdf.ln()
             for idx, row in df.iterrows():
-                pdf.cell(w, 7, _s(idx), border=1)
+                pdf.cell(w, 7, _enc(idx), border=1)
                 for v in row:
-                    pdf.cell(w, 7, _s(v)[:20], border=1)
+                    pdf.cell(w, 7, _enc(v)[:20], border=1)
                 pdf.ln()
         return bytes(pdf.output())
     except ImportError:
@@ -772,12 +772,15 @@ if prompt := st.chat_input("Describe your timetable — professors, rooms, slots
             except Exception as e:
                 err = str(e)
                 if "429" in err or "rate_limit" in err.lower():
-                    reply = (
-                        "⚠️ Rate limit hit. Wait ~1 minute and try again, "
-                        "or switch to llama-3.1-8b-instant in the sidebar."
-                    )
+                    model_now = st.session_state.get("model", MODELS[0])
+                    if "8b" in model_now:
+                        reply = "⚠️ Rate limit hit on 8B model too. Wait ~1 minute and try again."
+                    else:
+                        reply = "⚠️ Rate limit hit. Switch to llama-3.1-8b-instant in the sidebar and try again."
+                elif "tool_use_failed" in err or "failed_generation" in err:
+                    reply = "⚠️ The model failed to call a tool correctly. Try rephrasing your request more simply."
                 else:
-                    reply = f"Something went wrong: {e}"
+                    reply = f"⚠️ Error ({type(e).__name__}): {err[:300]}"
 
         # Sync tool-updated state back to session_state
         sess = _STORE.get(tid, {})
