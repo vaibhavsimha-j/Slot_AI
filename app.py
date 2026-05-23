@@ -2,9 +2,9 @@
 pip install streamlit langchain-groq langgraph langchain-core ortools pydantic pandas openpyxl fpdf2
 streamlit run app.py
 """
-import os, json, re, copy, uuid
+import os, json, re, copy, uuid, contextvars
 from datetime import datetime
-from typing import Annotated, TypedDict
+from typing import Annotated, Any, TypedDict
 import streamlit as st
 import pandas as pd
 from io import BytesIO
@@ -36,11 +36,25 @@ if not st.session_state.api_key and os.getenv("GROQ_API_KEY"):
 if "memory" not in st.session_state:
     st.session_state.memory = MemorySaver()
 
+# ── Thread-safe session store (tools run in async context, can't use st.session_state) ──
+# ContextVar holds the current session ID; _STORE holds per-session state dicts.
+_SESSION_ID: contextvars.ContextVar[str] = contextvars.ContextVar("session_id", default="")
+_STORE: dict[str, dict] = {}
+
+def _s() -> dict:
+    """Return the current session's state dict (safe from any async/thread context)."""
+    sid = _SESSION_ID.get()
+    return _STORE.setdefault(sid, {
+        "api_key": "", "model": MODELS[0],
+        "constraints": {}, "timetable": {}, "timetable_history": [], "tt_updated": False,
+    })
+
 # ── Utilities ───────────────────────────────────────────────────────────────────
 def _get_llm(t: float = 0.0) -> ChatGroq:
+    s = _s()
     return ChatGroq(
-        api_key=st.session_state.api_key,
-        model=st.session_state.model,
+        api_key=s.get("api_key", ""),
+        model=s.get("model", MODELS[0]),
         temperature=t,
     )
 
@@ -288,13 +302,14 @@ def extract_constraints(user_text: str) -> str:
     """Extract and store scheduling constraints from user text.
     Call whenever the user provides professors, subjects, rooms, time slots,
     days, unavailability, room restrictions, or any other scheduling rules."""
-    current  = st.session_state.get("constraints", {})
+    sess     = _s()
+    current  = sess.get("constraints", {})
     parsed   = _llm_extract(user_text, current)
     if not parsed:
         return json.dumps({"status": "error", "message": "Could not parse constraints from input."})
 
     merged = _merge(current, parsed)
-    st.session_state.constraints = merged
+    sess["constraints"] = merged
     miss   = _missing(merged)
     return json.dumps({
         "status":  "ready" if not miss else "incomplete",
@@ -320,7 +335,8 @@ def solve_timetable() -> str:
     """Generate the timetable using OR-Tools CP-SAT constraint solver.
     Call this when all constraints are collected and the user wants a timetable,
     or after constraints are updated to regenerate."""
-    c    = st.session_state.get("constraints", {})
+    sess = _s()
+    c    = sess.get("constraints", {})
     miss = _missing(c)
     if miss:
         return json.dumps({"status": "incomplete", "missing": miss})
@@ -328,16 +344,16 @@ def solve_timetable() -> str:
     result = _ortools_solve(c)
 
     if result["status"] == "success":
-        existing = st.session_state.get("timetable", {})
+        existing = sess.get("timetable", {})
         if existing:
-            st.session_state.timetable_history.append({
-                "version":     len(st.session_state.timetable_history) + 1,
+            sess.setdefault("timetable_history", []).append({
+                "version":     len(sess.get("timetable_history", [])) + 1,
                 "timetable":   copy.deepcopy(existing),
                 "constraints": copy.deepcopy(c),
                 "timestamp":   datetime.now().isoformat(),
             })
-        st.session_state.timetable   = result["timetable"]
-        st.session_state.tt_updated  = True
+        sess["timetable"]   = result["timetable"]
+        sess["tt_updated"]  = True
         return json.dumps({
             "status":        "success",
             "solver_status": result["solver_status"],
@@ -357,32 +373,32 @@ def edit_timetable(instruction: str) -> str:
     """Apply an edit or update to the current timetable.
     Use for: updating constraints and regenerating, swapping subjects between rooms,
     or any modification to an existing timetable."""
-    if not st.session_state.get("timetable"):
+    sess = _s()
+    if not sess.get("timetable"):
         return json.dumps({"status": "error", "message": "No timetable exists yet. Generate one first."})
 
-    current = st.session_state.get("constraints", {})
+    current = sess.get("constraints", {})
     parsed  = _llm_extract(instruction, current)
 
     if parsed:
-        # Remove any stale fixed_assignments before adding new ones
         if "fixed_assignments" in parsed:
             current.pop("fixed_assignments", None)
         merged = _merge(current, parsed)
-        st.session_state.constraints = merged
+        sess["constraints"] = merged
 
-    result = _ortools_solve(st.session_state.constraints)
+    result = _ortools_solve(sess["constraints"])
 
     if result["status"] == "success":
-        existing = st.session_state.get("timetable", {})
+        existing = sess.get("timetable", {})
         if existing:
-            st.session_state.timetable_history.append({
-                "version":     len(st.session_state.timetable_history) + 1,
+            sess.setdefault("timetable_history", []).append({
+                "version":     len(sess.get("timetable_history", [])) + 1,
                 "timetable":   copy.deepcopy(existing),
-                "constraints": copy.deepcopy(st.session_state.constraints),
+                "constraints": copy.deepcopy(sess["constraints"]),
                 "timestamp":   datetime.now().isoformat(),
             })
-        st.session_state.timetable  = result["timetable"]
-        st.session_state.tt_updated = True
+        sess["timetable"]   = result["timetable"]
+        sess["tt_updated"]  = True
         return json.dumps({
             "status":        "success",
             "solver_status": result["solver_status"],
@@ -396,8 +412,9 @@ def edit_timetable(instruction: str) -> str:
 def validate_timetable() -> str:
     """Validate the current timetable against all active constraints.
     Returns a detailed list of any violations found (conflicts, banned rooms, overloads, etc.)."""
-    tt = st.session_state.get("timetable", {})
-    c  = st.session_state.get("constraints", {})
+    sess = _s()
+    tt = sess.get("timetable", {})
+    c  = sess.get("constraints", {})
     if not tt:
         return json.dumps({"status": "error", "message": "No timetable to validate."})
 
@@ -459,7 +476,7 @@ def validate_timetable() -> str:
 def get_timetable_history() -> str:
     """Return a summary of all previously generated timetable versions with timestamps.
     Call when user asks about past timetables or wants to compare or roll back."""
-    history = st.session_state.get("timetable_history", [])
+    history = _s().get("timetable_history", [])
     if not history:
         return json.dumps({"status": "empty", "message": "No timetable history yet."})
 
@@ -484,8 +501,9 @@ def compare_timetables(version_a: int, version_b: int) -> str:
     """Compare two timetable versions cell by cell and show what changed.
     Use version number 0 to refer to the current (latest) timetable.
     Other version numbers come from get_timetable_history."""
-    history = st.session_state.get("timetable_history", [])
-    current = st.session_state.get("timetable", {})
+    sess    = _s()
+    history = sess.get("timetable_history", [])
+    current = sess.get("timetable", {})
 
     def _get(v: int):
         if v == 0:
@@ -557,7 +575,7 @@ class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
 
 
-def _build_graph() -> object:
+def _build_graph() -> Any:
     def agent_node(state: AgentState):
         llm      = _get_llm().bind_tools(TOOLS)
         response = llm.invoke([_SYSTEM] + state["messages"])
@@ -683,15 +701,28 @@ if prompt := st.chat_input("Describe your timetable — professors, rooms, slots
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    st.session_state.tt_updated = False
+    # Sync session_state → thread-safe store before entering async agent context
+    tid = st.session_state.thread_id
+    _SESSION_ID.set(tid)
+    _STORE[tid] = {
+        "api_key":           st.session_state.api_key,
+        "model":             st.session_state.model,
+        "constraints":       copy.deepcopy(st.session_state.constraints),
+        "timetable":         copy.deepcopy(st.session_state.timetable),
+        "timetable_history": list(st.session_state.timetable_history),
+        "tt_updated":        False,
+    }
 
     with st.chat_message("assistant"):
         with st.spinner("Thinking…"):
             try:
-                config = {"configurable": {"thread_id": st.session_state.thread_id}}
-                result = st.session_state.agent.invoke(
+                config = {"configurable": {"thread_id": tid}}
+                # copy_context() propagates the ContextVar into LangGraph's async tasks
+                ctx    = contextvars.copy_context()
+                result = ctx.run(
+                    st.session_state.agent.invoke,
                     {"messages": [HumanMessage(content=prompt)]},
-                    config=config,
+                    config,
                 )
                 reply = result["messages"][-1].content
             except Exception as e:
@@ -703,6 +734,13 @@ if prompt := st.chat_input("Describe your timetable — professors, rooms, slots
                     )
                 else:
                     reply = f"Something went wrong: {e}"
+
+        # Sync tool-updated state back to session_state
+        sess = _STORE.get(tid, {})
+        st.session_state.constraints       = sess.get("constraints",       st.session_state.constraints)
+        st.session_state.timetable         = sess.get("timetable",         st.session_state.timetable)
+        st.session_state.timetable_history = sess.get("timetable_history", st.session_state.timetable_history)
+        st.session_state.tt_updated        = sess.get("tt_updated", False)
 
         st.markdown(reply)
         tt_snap = copy.deepcopy(st.session_state.timetable) if st.session_state.tt_updated else None
