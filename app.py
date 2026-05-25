@@ -216,6 +216,12 @@ def _ortools_solve(constraints: dict) -> dict:
                     for s in range(n_s) for r in range(n_r) for sid in ids) <= max_s
             )
 
+    # Every subject must appear at least once per day across all rooms
+    # This prevents the solver from ignoring subjects entirely
+    for sub in range(n_sub):
+        for d in range(n_d):
+            model.Add(sum(x[d, s, r, sub] for s in range(n_s) for r in range(n_r)) >= 1)
+
     # Fixed assignments: pin specific cells
     for fa in constraints.get("fixed_assignments", []):
         try:
