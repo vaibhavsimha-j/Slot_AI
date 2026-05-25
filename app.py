@@ -344,8 +344,9 @@ def extract_constraints(
     sess["constraints"] = merged
     miss = _missing(merged)
     return json.dumps({
-        "status":  "ready" if not miss else "incomplete",
-        "missing": miss,
+        "status":      "ready" if not miss else "incomplete",
+        "missing":     miss,
+        "constraints": merged,
         "summary": {
             "professors": list(merged.get("teachers", {}).keys()),
             "subjects":   [s for ss in merged.get("teachers", {}).values() for s in ss],
@@ -389,6 +390,7 @@ def solve_timetable() -> str:
         return json.dumps({
             "status":        "success",
             "solver_status": result["solver_status"],
+            "timetable":     result["timetable"],
             "days":          list(result["timetable"].keys()),
             "total_cells":   (
                 len(c.get("slots", [])) *
@@ -456,6 +458,8 @@ def edit_timetable(
         return json.dumps({
             "status":        "success",
             "solver_status": result["solver_status"],
+            "timetable":     result["timetable"],
+            "constraints":   merged,
             "days":          list(result["timetable"].keys()),
             "message":       "Timetable updated successfully.",
         })
@@ -831,28 +835,32 @@ if prompt := st.chat_input("Describe your timetable — professors, rooms, slots
                 else:
                     reply = f"⚠️ Error ({type(e).__name__}): {err[:300]}"
 
-        # Sync timetable/constraints from _STORE — tools write there directly.
-        # Not echoed in tool return values (keeps message history small → fewer tokens).
-        sess = _STORE.get(tid, _STORE.get("_default", {}))
-        if sess.get("constraints"):
-            st.session_state.constraints = sess["constraints"]
-        if sess.get("timetable"):
-            st.session_state.timetable  = sess["timetable"]
-        if sess.get("tt_updated"):
-            st.session_state.tt_updated = True
-        if sess.get("timetable_history"):
-            st.session_state.timetable_history = sess["timetable_history"]
-
-        # show_timetable tool: check message flag as fallback
-        if result and not st.session_state.tt_updated:
+        # Parse tool outputs from the LangGraph message chain — runs on the main
+        # thread so it always works regardless of how tools were dispatched.
+        if result:
             for m in result.get("messages", []):
                 raw = getattr(m, "content", "")
-                if isinstance(raw, str):
-                    try:
-                        if json.loads(raw).get("show_timetable") and st.session_state.timetable:
-                            st.session_state.tt_updated = True
-                    except (json.JSONDecodeError, ValueError):
-                        pass
+                if not isinstance(raw, str):
+                    continue
+                try:
+                    data = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if "constraints" in data and isinstance(data["constraints"], dict):
+                    st.session_state.constraints = data["constraints"]
+                if (data.get("status") == "success"
+                        and "timetable" in data
+                        and isinstance(data["timetable"], dict)
+                        and data["timetable"]):
+                    st.session_state.timetable  = data["timetable"]
+                    st.session_state.tt_updated = True
+                if data.get("show_timetable") and st.session_state.timetable:
+                    st.session_state.tt_updated = True
+
+        # Also sync history from _STORE (written inside tools, not returned in messages)
+        sess = _STORE.get(tid, _STORE.get("_default", {}))
+        if sess.get("timetable_history"):
+            st.session_state.timetable_history = sess["timetable_history"]
 
         st.markdown(reply)
 
