@@ -122,7 +122,7 @@ def _ortools_solve(constraints: dict) -> dict:
         for s in range(n_s):
             for prof, psubjs in teachers.items():
                 ids = [subjects.index(sub) for sub in psubjs if sub in subjects]
-                if len(ids) > 1:
+                if ids:
                     model.Add(
                         sum(x[d, s, r, sid] for r in range(n_r) for sid in ids) <= 1
                     )
@@ -165,34 +165,6 @@ def _ortools_solve(constraints: dict) -> dict:
                 sum(x[d, s, r, sid]
                     for s in range(n_s) for r in range(n_r) for sid in ids) <= max_s
             )
-
-    # No consecutive classes for the same professor
-    # Two slots are "truly consecutive" only when one ends exactly as the next begins
-    # (i.e. there is no break between them — e.g. 09:50 ends == 09:50 starts next)
-    def _t(hhmm: str) -> int:
-        h, m = hhmm.strip().split(":")
-        return int(h) * 60 + int(m)
-
-    consecutive_pairs = []
-    for si in range(n_s - 1):
-        try:
-            end_cur   = _t(slots[si].split("-")[1])
-            start_nxt = _t(slots[si + 1].split("-")[0])
-            if end_cur == start_nxt:          # no break between these two slots
-                consecutive_pairs.append((si, si + 1))
-        except Exception:
-            pass
-
-    for prof, psubjs in teachers.items():
-        ids = [subjects.index(sub) for sub in psubjs if sub in subjects]
-        if not ids:
-            continue
-        for d in range(n_d):
-            for s1, s2 in consecutive_pairs:
-                model.Add(
-                    sum(x[d, s1, r, sid] for r in range(n_r) for sid in ids) +
-                    sum(x[d, s2, r, sid] for r in range(n_r) for sid in ids) <= 1
-                )
 
     # Fixed assignments: pin specific cells
     for fa in constraints.get("fixed_assignments", []):
