@@ -77,9 +77,56 @@ def _to_dfs(tt: dict) -> dict:
         )
     return out
 
-def _show_tt(tt: dict):
-    for day, df in _to_dfs(tt).items():
-        st.markdown(f"**{day}**")
+def _export_day_pdf(day: str, df: pd.DataFrame) -> bytes | None:
+    try:
+        from fpdf import FPDF
+        _enc = lambda t: str(t).encode("latin-1", "replace").decode("latin-1")
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Helvetica", "B", 14)
+        pdf.cell(0, 10, _enc(day))
+        pdf.ln()
+        pdf.set_font("Helvetica", size=7)
+        cols = ["Time"] + list(df.columns)
+        w = 190 / len(cols)
+        pdf.set_fill_color(220, 220, 220)
+        for col in cols:
+            pdf.cell(w, 7, _enc(col), border=1, fill=True)
+        pdf.ln()
+        for idx, row in df.iterrows():
+            pdf.cell(w, 7, _enc(str(idx)), border=1)
+            for v in row:
+                pdf.cell(w, 7, _enc(str(v))[:20], border=1)
+            pdf.ln()
+        return bytes(pdf.output())
+    except Exception:
+        return None
+
+
+def _export_day_xlsx(day: str, df: pd.DataFrame) -> bytes:
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as w:
+        df.to_excel(w, sheet_name=day[:31])
+    return buf.getvalue()
+
+
+def _show_tt(tt: dict, key_prefix: str = "tt"):
+    dfs = _to_dfs(tt)
+    for day, df in dfs.items():
+        safe = day.replace(" ", "_")
+        hdr_col, pdf_col, xl_col = st.columns([5, 1, 1])
+        hdr_col.markdown(f"**{day}**")
+        pdf_bytes = _export_day_pdf(day, df)
+        if pdf_bytes:
+            pdf_col.download_button(
+                "⬇️ PDF", pdf_bytes, f"{safe}.pdf", "application/pdf",
+                key=f"{key_prefix}_pdf_{safe}", use_container_width=True,
+            )
+        xl_col.download_button(
+            "⬇️ Excel", _export_day_xlsx(day, df), f"{safe}.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"{key_prefix}_xl_{safe}", use_container_width=True,
+        )
         st.dataframe(df, use_container_width=True)
 
 def _missing(c: dict) -> list:
@@ -694,14 +741,18 @@ with st.sidebar:
     else:
         st.caption("_Generate a timetable first._")
 
+# ── Timetable Display ─────────────────────────────────────────────────────────────
+if st.session_state.timetable:
+    st.subheader("📊 Current Timetable")
+    _show_tt(st.session_state.timetable, key_prefix="main")
+    st.divider()
+
 # ── Chat ──────────────────────────────────────────────────────────────────────────
 st.subheader("💬 Chat with SLOT AI")
 
 for msg in st.session_state.get("display_messages", []):
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
-        if msg.get("timetable"):
-            _show_tt(msg["timetable"])
 
 if not st.session_state.api_key:
     st.info("👈 Enter your Groq API key in the sidebar to get started.")
@@ -757,20 +808,21 @@ if prompt := st.chat_input("Describe your timetable — professors, rooms, slots
                 else:
                     reply = f"⚠️ Error ({type(e).__name__}): {err[:300]}"
 
-        # Sync tool-updated state back to session_state
+        # Sync tool-updated state back to session_state.
+        # Fallback: if ContextVar lost the tid inside tool execution, data lands in _STORE[""]
         sess = _STORE.get(tid, {})
+        if not sess.get("timetable") and not sess.get("tt_updated"):
+            fb = _STORE.get("", {})
+            if fb.get("timetable") or fb.get("tt_updated"):
+                sess = fb
+
         st.session_state.constraints       = sess.get("constraints",       st.session_state.constraints)
         st.session_state.timetable         = sess.get("timetable",         st.session_state.timetable)
         st.session_state.timetable_history = sess.get("timetable_history", st.session_state.timetable_history)
         st.session_state.tt_updated        = sess.get("tt_updated", False)
 
         st.markdown(reply)
-        tt_snap = copy.deepcopy(st.session_state.timetable) if st.session_state.tt_updated else None
-        if tt_snap:
-            _show_tt(tt_snap)
 
-    st.session_state.display_messages.append(
-        {"role": "assistant", "content": reply, "timetable": tt_snap}
-    )
-    if tt_snap:
+    st.session_state.display_messages.append({"role": "assistant", "content": reply})
+    if st.session_state.tt_updated:
         st.rerun()
