@@ -46,7 +46,7 @@ if "thread_agents" not in st.session_state:
 if not st.session_state.chat_sessions:
     _init_tid = st.session_state.thread_id
     st.session_state.chat_sessions = [{
-        "thread_id": _init_tid, "title": "New Chat",
+        "thread_id": _init_tid, "title": "New Chat", "custom_title": False,
         "display_messages": [], "constraints": {},
         "timetable": {}, "timetable_history": [],
     }]
@@ -74,7 +74,8 @@ def _save_current_chat():
             s["constraints"]       = copy.deepcopy(st.session_state.constraints)
             s["timetable"]         = copy.deepcopy(st.session_state.timetable)
             s["timetable_history"] = list(st.session_state.timetable_history)
-            s["title"]             = _chat_title(s["display_messages"])
+            if not s.get("custom_title"):
+                s["title"] = _chat_title(s["display_messages"])
             break
 
 def _load_chat(tid: str):
@@ -95,7 +96,7 @@ def _new_chat():
     _save_current_chat()
     new_tid = str(uuid.uuid4())
     st.session_state.chat_sessions.insert(0, {
-        "thread_id": new_tid, "title": "New Chat",
+        "thread_id": new_tid, "title": "New Chat", "custom_title": False,
         "display_messages": [], "constraints": {},
         "timetable": {}, "timetable_history": [],
     })
@@ -879,6 +880,7 @@ with st.sidebar:
             _c1, _c2 = st.columns(2)
             if _c1.button("Save", key=f"_rns_{_tid}", use_container_width=True):
                 _sess["title"] = _new_name.strip() or _sess["title"]
+                _sess["custom_title"] = True
                 st.session_state.renaming_chat_tid = None
                 st.rerun()
             if _c2.button("Cancel", key=f"_rnc_{_tid}", use_container_width=True):
@@ -921,7 +923,7 @@ with st.sidebar:
 </div>
 """, unsafe_allow_html=True)
 
-    # Iframe JS: MutationObserver collapses span-marker containers + hides rn/dl buttons.
+    # Iframe JS: injects persistent CSS for span-marker gaps + hides rn/dl via MutationObserver.
     # getTid uses bounding-rect comparison — robust regardless of DOM nesting depth.
     st.components.v1.html("""
 <script>
@@ -929,24 +931,20 @@ with st.sidebar:
   var P=window.parent, PD=P.document;
   var _ctxTid=null;
 
+  // Inject a persistent <style> into parent <head> once — CSS handles the gap,
+  // which is more resilient than inline styles that Streamlit's React can override.
+  if(!PD.getElementById('sai-style')){
+    var s=PD.createElement('style');
+    s.id='sai-style';
+    s.textContent=
+      '[data-testid="element-container"]:has(span[id^="sai-sw-"]){'+
+      'height:0!important;min-height:0!important;'+
+      'overflow:hidden!important;margin:0!important;padding:0!important;}';
+    (PD.head||PD.documentElement).appendChild(s);
+  }
+
+  // Hide rn/dl column containers (MutationObserver re-runs after every Streamlit rerender)
   function cleanup(){
-    // 1. Collapse span-marker element-containers so they take no vertical space
-    var spans=PD.querySelectorAll('span[id^="sai-sw-"]');
-    for(var i=0;i<spans.length;i++){
-      var el=spans[i];
-      while(el&&el.parentElement){
-        if(el.getAttribute&&el.getAttribute('data-testid')==='element-container'){
-          if(el.style.height!=='0px'){
-            el.style.cssText+=';height:0!important;min-height:0!important;'+
-              'overflow:hidden!important;margin:0!important;padding:0!important;'+
-              'line-height:0!important;';
-          }
-          break;
-        }
-        el=el.parentElement;
-      }
-    }
-    // 2. Hide rn/dl column containers
     var btns=PD.querySelectorAll('button');
     for(var i=0;i<btns.length;i++){
       var t=btns[i].textContent.trim();
