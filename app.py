@@ -885,7 +885,8 @@ with st.sidebar:
                 st.session_state.renaming_chat_tid = None
                 st.rerun()
         else:
-            # Invisible span marker — JS reads id to get tid on right-click
+            # Invisible span marker — JS reads id to get tid on right-click.
+            # JS also collapses its container so it takes no vertical space.
             st.markdown(f'<span id="sai-sw-{_tid}"></span>', unsafe_allow_html=True)
             # Visible chat button — clean label, no UUID
             _label = ("› " if _is_active else "") + _sess["title"]
@@ -894,8 +895,8 @@ with st.sidebar:
                 _save_current_chat()
                 _load_chat(_tid)
                 st.rerun()
-            # Hidden action buttons — JS hides their container via MutationObserver,
-            # but .click() still works on hidden DOM nodes (WebSocket, no navigation)
+            # Hidden action buttons — JS hides their container via MutationObserver.
+            # .click() still works on hidden DOM nodes (WebSocket, no navigation).
             _crn, _cdl = st.columns(2)
             if _crn.button(f"rn​{_tid}", key=f"_rn_{_tid}", use_container_width=True):
                 st.session_state.renaming_chat_tid = _tid
@@ -920,54 +921,62 @@ with st.sidebar:
 </div>
 """, unsafe_allow_html=True)
 
-    # Iframe JS: hides rn/dl buttons via MutationObserver, handles right-click context menu.
-    # Tid is extracted from the sai-sw-{tid} span that precedes each chat button.
+    # Iframe JS: MutationObserver collapses span-marker containers + hides rn/dl buttons.
+    # getTid uses bounding-rect comparison — robust regardless of DOM nesting depth.
     st.components.v1.html("""
 <script>
 (function(){
   var P=window.parent, PD=P.document;
   var _ctxTid=null;
 
-  // Hide the container of any button whose label starts with rn​ or dl​.
-  // We hide the stHorizontalBlock (columns wrapper) so both buttons disappear together.
-  function hideActionButtons(){
+  function cleanup(){
+    // 1. Collapse span-marker element-containers so they take no vertical space
+    var spans=PD.querySelectorAll('span[id^="sai-sw-"]');
+    for(var i=0;i<spans.length;i++){
+      var el=spans[i];
+      while(el&&el.parentElement){
+        if(el.getAttribute&&el.getAttribute('data-testid')==='element-container'){
+          if(el.style.height!=='0px'){
+            el.style.cssText+=';height:0!important;min-height:0!important;'+
+              'overflow:hidden!important;margin:0!important;padding:0!important;'+
+              'line-height:0!important;';
+          }
+          break;
+        }
+        el=el.parentElement;
+      }
+    }
+    // 2. Hide rn/dl column containers
     var btns=PD.querySelectorAll('button');
     for(var i=0;i<btns.length;i++){
       var t=btns[i].textContent.trim();
       if(t.startsWith('rn​')||t.startsWith('dl​')){
-        // Walk up to find the stHorizontalBlock or nearest element-container not inside a column
-        var el=btns[i];
-        while(el&&el.parentElement){
-          if(el.getAttribute&&el.getAttribute('data-testid')==='stHorizontalBlock'){
-            if(el.style.display!=='none') el.style.display='none';
-            break;
-          }
-          // Fallback: element-container whose parent is NOT a column
-          if(el.getAttribute&&el.getAttribute('data-testid')==='element-container'){
-            var par=el.parentElement;
-            var parTest=par&&par.getAttribute&&par.getAttribute('data-testid');
-            if(parTest&&parTest!=='column'){
-              if(el.style.display!=='none') el.style.display='none';
-              break;
-            }
-          }
-          el=el.parentElement;
+        var hb=btns[i].closest('[data-testid="stHorizontalBlock"]');
+        if(hb){
+          var par=hb.parentElement;
+          var wrap=(par&&par.getAttribute('data-testid')==='element-container')?par:hb;
+          if(wrap.style.display!=='none') wrap.style.display='none';
+        } else {
+          var ec=btns[i].closest('[data-testid="element-container"]');
+          if(ec&&ec.style.display!=='none') ec.style.display='none';
         }
       }
     }
   }
 
-  // Extract tid from the sai-sw-{tid} span that Streamlit renders just before each chat button.
+  // Find tid by bounding-rect: pick the sai-sw-* span closest above the right-clicked button
   function getTid(btn){
-    var ec=btn.closest('[data-testid="element-container"]');
-    if(!ec) return null;
-    var prev=ec.previousElementSibling;
-    for(var i=0;i<4&&prev;i++){
-      var sw=prev.querySelector('span[id^="sai-sw-"]');
-      if(sw) return sw.id.slice(7); // strip "sai-sw-"
-      prev=prev.previousElementSibling;
+    var br=btn.getBoundingClientRect();
+    var spans=PD.querySelectorAll('span[id^="sai-sw-"]');
+    var best=null,bestDist=Infinity;
+    for(var i=0;i<spans.length;i++){
+      var sr=spans[i].getBoundingClientRect();
+      if(sr.top<=br.top+5){
+        var d=br.top-sr.top;
+        if(d<bestDist){bestDist=d;best=spans[i].id.slice(7);}
+      }
     }
-    return null;
+    return best;
   }
 
   function clickHiddenBtn(prefix,tid){
@@ -978,10 +987,9 @@ with st.sidebar:
     }
   }
 
-  // Run once now and re-run on every DOM mutation (covers Streamlit reruns)
-  hideActionButtons();
+  cleanup();
   if(P._saiObs) P._saiObs.disconnect();
-  P._saiObs=new MutationObserver(hideActionButtons);
+  P._saiObs=new MutationObserver(cleanup);
   P._saiObs.observe(PD.body,{childList:true,subtree:true});
 
   if(P._saiCtxH) PD.removeEventListener('contextmenu',P._saiCtxH);
@@ -991,7 +999,6 @@ with st.sidebar:
     var btn=e.target&&e.target.closest?e.target.closest('button'):null;
     if(!btn){menu.style.display='none';return;}
     var t=btn.textContent.trim();
-    // Ignore hidden action buttons, Save, Cancel, New Chat, View Timetable
     if(t.startsWith('rn​')||t.startsWith('dl​')||
        t==='Save'||t==='Cancel'){menu.style.display='none';return;}
     var tid=getTid(btn);
