@@ -19,12 +19,12 @@ from langgraph.checkpoint.memory import MemorySaver
 from ortools.sat.python import cp_model
 
 # ── Config ──────────────────────────────────────────────────────────────────────
-MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+MODEL = "llama-3.1-8b-instant"
 st.set_page_config(page_title="SLOT AI", page_icon="📅", layout="wide")
 
 # ── Session Init ────────────────────────────────────────────────────────────────
 _DEFAULTS = dict(
-    api_key="", model=MODELS[0],
+    api_key="",
     constraints={}, timetable={}, timetable_history=[],
     display_messages=[], tt_updated=False,
     thread_id=str(uuid.uuid4()),
@@ -49,7 +49,7 @@ def _s() -> dict:
     if not sid or sid not in _STORE:
         sid = "_default"
     return _STORE.setdefault(sid, {
-        "api_key": "", "model": MODELS[0],
+        "api_key": "", "model": MODEL,
         "constraints": {}, "timetable": {}, "timetable_history": [], "tt_updated": False,
     })
 
@@ -58,7 +58,7 @@ def _get_llm(t: float = 0.0) -> ChatGroq:
     # api_key is injected into os.environ["GROQ_API_KEY"] before every agent invocation
     # so ChatGroq picks it up automatically — avoids asyncio context propagation issues
     return ChatGroq(
-        model=_s().get("model", MODELS[0]),
+        model=MODEL,
         temperature=t,
     )
 
@@ -716,11 +716,7 @@ with st.sidebar:
     key_in   = st.text_input("Groq API Key", type="password",
                               value=st.session_state.api_key, placeholder="gsk_...",
                               help="Get a free key at console.groq.com")
-    model_in = st.selectbox("Model", MODELS, index=MODELS.index(st.session_state.model))
     st.session_state.api_key = key_in
-    st.session_state.model   = model_in
-    # Key and model are injected into os.environ / _STORE before every agent.invoke(),
-    # so no graph rebuild is needed — conversation context is fully preserved.
 
     st.divider()
     st.subheader("Pages")
@@ -805,7 +801,7 @@ if prompt := st.chat_input("Describe your timetable — professors, rooms, slots
     _tl.session_id = tid
     _STORE[tid] = {
         "api_key":           st.session_state.api_key,
-        "model":             st.session_state.model,
+        "model":             MODEL,
         "constraints":       copy.deepcopy(st.session_state.constraints),
         "timetable":         copy.deepcopy(st.session_state.timetable),
         "timetable_history": list(st.session_state.timetable_history),
@@ -825,11 +821,7 @@ if prompt := st.chat_input("Describe your timetable — professors, rooms, slots
                 err = str(e)
                 result = None
                 if "429" in err or "rate_limit" in err.lower():
-                    model_now = st.session_state.get("model", MODELS[0])
-                    if "8b" in model_now:
-                        reply = "⚠️ Rate limit hit on 8B model too. Wait ~1 minute and try again."
-                    else:
-                        reply = "⚠️ Rate limit hit. Switch to llama-3.1-8b-instant in the sidebar and try again."
+                    reply = "⚠️ Rate limit hit. Please wait ~1 minute and try again."
                 elif "tool_use_failed" in err or "failed_generation" in err:
                     reply = "⚠️ The model failed to call a tool correctly. Try rephrasing your request more simply."
                 else:
