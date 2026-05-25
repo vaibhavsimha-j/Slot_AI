@@ -847,6 +847,20 @@ section[data-testid="stSidebar"] [data-testid="stTextInput"] [data-baseweb="base
     padding-right: 0 !important;
 }
 
+/* ── Chat row: collapse gap between title button and ⋮ button ── */
+section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] {
+    gap: 2px !important;
+    align-items: center !important;
+}
+/* ── ⋮ popover button: compact, no extra padding ── */
+section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"]
+    div[data-testid="stColumn"]:last-child button {
+    padding: 2px 4px !important;
+    min-height: 0 !important;
+    font-size: 16px !important;
+    line-height: 1.2 !important;
+}
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -860,18 +874,6 @@ with st.sidebar:
 
     st.divider()
 
-    # ── Process pending JS action (from hidden input set by React setter trick) ──
-    _sai_pending = st.session_state.get("_sai_pending", "")
-    if _sai_pending:
-        st.session_state["_sai_pending"] = ""
-        _sai_cmd, _, _sai_tid = _sai_pending.partition(":")
-        if _sai_cmd == "rn" and _sai_tid:
-            st.session_state.renaming_chat_tid = _sai_tid
-            st.rerun()
-        elif _sai_cmd == "dl" and _sai_tid:
-            _delete_chat(_sai_tid)
-            st.rerun()
-
     # ── New Chat ──
     if st.button("New Chat +", use_container_width=True, type="secondary"):
         _new_chat()
@@ -879,149 +881,34 @@ with st.sidebar:
 
     st.caption("Chats")
 
-    # ── Chat list — only visible buttons, no hidden elements, no gaps ──
+    # ── Chat list ──
     for _sess in st.session_state.chat_sessions:
         _tid = _sess["thread_id"]
         _is_active = _tid == st.session_state.active_thread_id
+        _label = ("› " if _is_active else "") + _sess["title"]
 
-        if st.session_state.renaming_chat_tid == _tid:
-            _new_name = st.text_input(
-                "", value=_sess["title"],
-                key=f"_rni_{_tid}", label_visibility="collapsed"
-            )
-            _c1, _c2 = st.columns(2)
-            if _c1.button("Save", key=f"_rns_{_tid}", use_container_width=True):
-                _sess["title"] = _new_name.strip() or _sess["title"]
-                _sess["custom_title"] = True
-                st.session_state.renaming_chat_tid = None
-                st.rerun()
-            if _c2.button("Cancel", key=f"_rnc_{_tid}", use_container_width=True):
-                st.session_state.renaming_chat_tid = None
-                st.rerun()
-        else:
-            _label = ("› " if _is_active else "") + _sess["title"]
-            if st.button(_label, key=f"_sw_{_tid}", use_container_width=True,
-                         type="primary" if _is_active else "secondary"):
-                _save_current_chat()
-                _load_chat(_tid)
-                st.rerun()
+        _col_chat, _col_menu = st.columns([8, 1], gap="small")
 
-    # ── Hidden text input: JS writes "rn:tid" or "dl:tid" via React setter ──
-    # CSS hides its container; input[placeholder] attribute makes it findable by JS.
-    st.markdown("""<style>
-/* Hide the hidden action input — target by placeholder attribute on the input itself */
-input[placeholder="__sai__"] { display:none!important; }
-/* Hide its stTextInput wrapper and element-container to remove all spacing */
-div[data-testid="stTextInput"]:has(input[placeholder="__sai__"]) { display:none!important; }
-div[data-testid="element-container"]:has(input[placeholder="__sai__"]) { display:none!important; }
-div[data-testid="stVerticalBlockBorderWrapper"]:has(input[placeholder="__sai__"]) { display:none!important; }
-</style>""", unsafe_allow_html=True)
-    st.text_input("", key="_sai_pending", placeholder="__sai__",
-                  label_visibility="collapsed")
+        if _col_chat.button(_label, key=f"_sw_{_tid}", use_container_width=True,
+                            type="primary" if _is_active else "secondary"):
+            _save_current_chat()
+            _load_chat(_tid)
+            st.rerun()
 
-    # ── Context menu div ──
-    st.markdown("""
-<div id="sai-ctx-menu" style="display:none;position:fixed;z-index:99999;
-  background:rgb(22,22,26);border:1px solid rgba(255,255,255,0.18);
-  border-radius:6px;padding:3px;min-width:110px;box-shadow:0 4px 16px rgba(0,0,0,0.7);">
-  <button type="button" id="sai-ctx-rename-btn"
-    style="display:block;width:100%;text-align:left;padding:5px 10px;
-    background:transparent;border:none;color:rgba(255,255,255,0.82);
-    font-size:12px;cursor:pointer;border-radius:4px;font-family:inherit;">Rename</button>
-  <button type="button" id="sai-ctx-delete-btn"
-    style="display:block;width:100%;text-align:left;padding:5px 10px;
-    background:transparent;border:none;color:rgba(255,255,255,0.82);
-    font-size:12px;cursor:pointer;border-radius:4px;font-family:inherit;">Delete</button>
-</div>
-""", unsafe_allow_html=True)
-
-    # ── Iframe JS: right-click context menu + React setter for rename/delete ──
-    # getTid uses button order matched against SAI_TIDS (Python-injected list).
-    # triggerAction uses React's native value setter + Enter key to trigger a Streamlit rerun.
-    _sai_tids = [s["thread_id"] for s in st.session_state.chat_sessions
-                 if st.session_state.renaming_chat_tid != s["thread_id"]]
-    st.components.v1.html(f"""
-<script>
-(function(){{
-  var P=window.parent, PD=P.document;
-  var SAI_TIDS={json.dumps(_sai_tids)};
-  var _ctxTid=null;
-
-  // React native setter trick: bypasses React's synthetic event tracking,
-  // then fires Enter key so Streamlit commits the new value immediately.
-  function triggerAction(action,tid){{
-    var input=PD.querySelector('input[placeholder="__sai__"]');
-    if(!input) return;
-    var setter=Object.getOwnPropertyDescriptor(
-      window.HTMLInputElement.prototype,'value').set;
-    setter.call(input,action+':'+tid);
-    input.dispatchEvent(new Event('input',{{bubbles:true}}));
-    input.dispatchEvent(new KeyboardEvent('keydown',{{key:'Enter',keyCode:13,bubbles:true}}));
-    input.dispatchEvent(new KeyboardEvent('keypress',{{key:'Enter',keyCode:13,bubbles:true}}));
-    input.dispatchEvent(new KeyboardEvent('keyup',{{key:'Enter',keyCode:13,bubbles:true}}));
-  }}
-
-  // Identify which chat was right-clicked by matching the button's DOM order
-  // against SAI_TIDS (the list of visible-chat tids, Python-injected).
-  // Chat buttons: in sidebar, not in a column (no st.columns wrapping), not special text.
-  function getTid(btn){{
-    var sidebar=PD.querySelector('[data-testid="stSidebar"]');
-    if(!sidebar) return null;
-    var allBtns=sidebar.querySelectorAll('button');
-    var chatBtns=[];
-    for(var i=0;i<allBtns.length;i++){{
-      var b=allBtns[i];
-      // Skip buttons inside columns (Save/Cancel of rename form)
-      if(b.closest('[data-testid="column"]')) continue;
-      // Skip context menu's own buttons (they're in sidebar DOM but not chat buttons)
-      if(b.closest('#sai-ctx-menu')) continue;
-      // Skip eye-toggle inside password/text inputs (e.g. Groq API key field)
-      if(b.closest('[data-testid="stTextInput"]')) continue;
-      // Skip known non-chat buttons
-      var t=b.textContent.trim();
-      if(t==='New Chat +'||t.indexOf('View Timetable')!==-1) continue;
-      chatBtns.push(b);
-    }}
-    var idx=chatBtns.indexOf(btn);
-    return (idx>=0&&idx<SAI_TIDS.length)?SAI_TIDS[idx]:null;
-  }}
-
-  if(P._saiCtxH) PD.removeEventListener('contextmenu',P._saiCtxH);
-  P._saiCtxH=function(e){{
-    var menu=PD.getElementById('sai-ctx-menu');
-    if(!menu) return;
-    var btn=e.target&&e.target.closest?e.target.closest('button'):null;
-    if(!btn||!btn.closest('[data-testid="stSidebar"]')||btn.closest('#sai-ctx-menu')){{
-      menu.style.display='none'; return;
-    }}
-    var tid=getTid(btn);
-    if(!tid){{menu.style.display='none'; return;}}
-    e.preventDefault();
-    _ctxTid=tid;
-    menu.style.left=e.clientX+'px';
-    menu.style.top=e.clientY+'px';
-    menu.style.display='block';
-  }};
-  PD.addEventListener('contextmenu',P._saiCtxH);
-
-  if(P._saiClickH) PD.removeEventListener('click',P._saiClickH);
-  P._saiClickH=function(e){{
-    var menu=PD.getElementById('sai-ctx-menu');
-    if(!menu) return;
-    if(e.target&&e.target.id==='sai-ctx-rename-btn'){{
-      e.stopPropagation(); menu.style.display='none';
-      if(_ctxTid) triggerAction('rn',_ctxTid); return;
-    }}
-    if(e.target&&e.target.id==='sai-ctx-delete-btn'){{
-      e.stopPropagation(); menu.style.display='none';
-      if(_ctxTid) triggerAction('dl',_ctxTid); return;
-    }}
-    if(!e.target.closest('#sai-ctx-menu')) menu.style.display='none';
-  }};
-  PD.addEventListener('click',P._saiClickH);
-}})();
-</script>
-""", height=0)
+        with _col_menu:
+            with st.popover("⋮", use_container_width=True):
+                st.caption(f"**{_sess['title']}**")
+                _new_name = st.text_input("Chat name", value=_sess["title"],
+                                          key=f"_pn_{_tid}")
+                if st.button("💾 Save name", key=f"_ps_{_tid}", use_container_width=True):
+                    _sess["title"] = _new_name.strip() or _sess["title"]
+                    _sess["custom_title"] = True
+                    st.rerun()
+                st.divider()
+                if st.button("🗑️ Delete chat", key=f"_pd_{_tid}",
+                             use_container_width=True):
+                    _delete_chat(_tid)
+                    st.rerun()
 
     st.divider()
 
