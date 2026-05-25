@@ -37,8 +37,10 @@ for k, v in _DEFAULTS.items():
     st.session_state.setdefault(k, v)
 if not st.session_state.api_key and os.getenv("GROQ_API_KEY"):
     st.session_state.api_key = os.getenv("GROQ_API_KEY", "")
-if "memory" not in st.session_state:
-    st.session_state.memory = MemorySaver()
+if "thread_memories" not in st.session_state:
+    st.session_state.thread_memories = {}
+if "thread_agents" not in st.session_state:
+    st.session_state.thread_agents = {}
 
 # Bootstrap the first chat session on a fresh load
 if not st.session_state.chat_sessions:
@@ -99,8 +101,24 @@ def _new_chat():
     })
     _load_chat(new_tid)
 
+def _get_thread_memory(tid: str) -> MemorySaver:
+    if tid not in st.session_state.thread_memories:
+        st.session_state.thread_memories[tid] = MemorySaver()
+    return st.session_state.thread_memories[tid]
+
+def _get_agent(tid: str):
+    if tid not in st.session_state.thread_agents:
+        st.session_state.thread_agents[tid] = _build_graph(_get_thread_memory(tid))
+    return st.session_state.thread_agents[tid]
+
+def _clear_thread_memory(tid: str):
+    st.session_state.thread_memories.pop(tid, None)
+    st.session_state.thread_agents.pop(tid, None)
+    _STORE.pop(tid, None)
+
 def _delete_chat(tid: str):
     """Remove a chat; switch to another if it was the active one."""
+    _clear_thread_memory(tid)
     st.session_state.chat_sessions = [
         s for s in st.session_state.chat_sessions if s["thread_id"] != tid
     ]
@@ -736,14 +754,19 @@ SCHEDULING WORKFLOW:
 2. Partial info → extract_constraints with what's available, ask for what's missing
 3. Change requested → edit_timetable with only the delta
 4. INFEASIBLE → explain which constraints conflict and suggest how to resolve
-5. User wants to view the schedule → call show_timetable\
+5. User wants to view the schedule → call show_timetable
+
+TOOL CALL DISCIPLINE — CRITICAL:
+- Never call solve_timetable unless extract_constraints has already been called successfully earlier in THIS conversation, or the user's current message contains all the scheduling data needed.
+- If the user says something vague like "generate a timetable" or "make a schedule" WITHOUT providing details in their current message, respond naturally and ask what they want to schedule — do NOT silently reuse old constraints.
+- Never call any scheduling tool based solely on context carried over from old messages when the user's current intent is ambiguous. When in doubt, ask.\
 """)
 
 class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
 
 
-def _build_graph() -> Any:
+def _build_graph(memory: MemorySaver) -> Any:
     def agent_node(state: AgentState):
         llm      = _get_llm().bind_tools(TOOLS)
         response = llm.invoke([_SYSTEM] + state["messages"])
@@ -755,11 +778,7 @@ def _build_graph() -> Any:
     graph.set_entry_point("agent")
     graph.add_conditional_edges("agent", tools_condition)
     graph.add_edge("tools", "agent")
-    return graph.compile(checkpointer=st.session_state.memory)
-
-
-if "agent" not in st.session_state:
-    st.session_state.agent = _build_graph()
+    return graph.compile(checkpointer=memory)
 
 # ── Exports ──────────────────────────────────────────────────────────────────────
 def _export_pdf():
@@ -983,11 +1002,6 @@ if not st.session_state.api_key:
     st.info("👈 Enter your Groq API key in the sidebar to get started.")
     st.stop()
 
-if "memory" not in st.session_state:
-    st.session_state.memory = MemorySaver()
-if "agent" not in st.session_state:
-    st.session_state.agent = _build_graph()
-
 if prompt := st.chat_input("What would you like to schedule today?"):
     st.session_state.display_messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
@@ -1010,7 +1024,7 @@ if prompt := st.chat_input("What would you like to schedule today?"):
         with st.spinner("Thinking…"):
             try:
                 config = {"configurable": {"thread_id": tid}}
-                result = st.session_state.agent.invoke(
+                result = _get_agent(tid).invoke(
                     {"messages": [HumanMessage(content=prompt)]},
                     config,
                 )
