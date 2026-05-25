@@ -29,6 +29,8 @@ _DEFAULTS = dict(
     display_messages=[], tt_updated=False,
     thread_id=str(uuid.uuid4()),
     page="chat",
+    chat_sessions=[],   # [{thread_id, title, display_messages, constraints, timetable, timetable_history}]
+    active_thread_id="",
 )
 for k, v in _DEFAULTS.items():
     st.session_state.setdefault(k, v)
@@ -36,6 +38,76 @@ if not st.session_state.api_key and os.getenv("GROQ_API_KEY"):
     st.session_state.api_key = os.getenv("GROQ_API_KEY", "")
 if "memory" not in st.session_state:
     st.session_state.memory = MemorySaver()
+
+# Bootstrap the first chat session on a fresh load
+if not st.session_state.chat_sessions:
+    _init_tid = st.session_state.thread_id
+    st.session_state.chat_sessions = [{
+        "thread_id": _init_tid, "title": "New Chat",
+        "display_messages": [], "constraints": {},
+        "timetable": {}, "timetable_history": [],
+    }]
+    st.session_state.active_thread_id = _init_tid
+elif not st.session_state.active_thread_id:
+    # Recover active pointer after a hot-reload
+    st.session_state.active_thread_id = st.session_state.chat_sessions[0]["thread_id"]
+    st.session_state.thread_id = st.session_state.active_thread_id
+
+# ── Chat session helpers ──────────────────────────────────────────────────────
+def _chat_title(msgs: list) -> str:
+    """Derive a short title from the first user message."""
+    for m in msgs:
+        if m["role"] == "user":
+            t = m["content"].strip().replace("\n", " ")
+            return (t[:42] + "…") if len(t) > 42 else t
+    return "New Chat"
+
+def _save_current_chat():
+    """Flush active session_state back into chat_sessions."""
+    tid = st.session_state.active_thread_id
+    for s in st.session_state.chat_sessions:
+        if s["thread_id"] == tid:
+            s["display_messages"]  = list(st.session_state.display_messages)
+            s["constraints"]       = copy.deepcopy(st.session_state.constraints)
+            s["timetable"]         = copy.deepcopy(st.session_state.timetable)
+            s["timetable_history"] = list(st.session_state.timetable_history)
+            s["title"]             = _chat_title(s["display_messages"])
+            break
+
+def _load_chat(tid: str):
+    """Load a stored chat into active session_state (does NOT rerun)."""
+    for s in st.session_state.chat_sessions:
+        if s["thread_id"] == tid:
+            st.session_state.active_thread_id  = tid
+            st.session_state.thread_id         = tid
+            st.session_state.display_messages  = list(s["display_messages"])
+            st.session_state.constraints       = copy.deepcopy(s["constraints"])
+            st.session_state.timetable         = copy.deepcopy(s["timetable"])
+            st.session_state.timetable_history = list(s["timetable_history"])
+            st.session_state.page              = "chat"
+            break
+
+def _new_chat():
+    """Save current, create a blank chat, and set it active."""
+    _save_current_chat()
+    new_tid = str(uuid.uuid4())
+    st.session_state.chat_sessions.insert(0, {
+        "thread_id": new_tid, "title": "New Chat",
+        "display_messages": [], "constraints": {},
+        "timetable": {}, "timetable_history": [],
+    })
+    _load_chat(new_tid)
+
+def _delete_chat(tid: str):
+    """Remove a chat; switch to another if it was the active one."""
+    st.session_state.chat_sessions = [
+        s for s in st.session_state.chat_sessions if s["thread_id"] != tid
+    ]
+    if st.session_state.active_thread_id == tid:
+        if st.session_state.chat_sessions:
+            _load_chat(st.session_state.chat_sessions[0]["thread_id"])
+        else:
+            _new_chat()
 
 # ── Session store — tools cannot access st.session_state, so we use a thread-local
 # to carry the active session id into tool calls (LangGraph invoke is synchronous,
@@ -712,19 +784,42 @@ def _export_excel():
 st.title("📅 SLOT AI")
 
 with st.sidebar:
-    st.header("⚙️ Setup")
-    key_in   = st.text_input("Groq API Key", type="password",
-                              value=st.session_state.api_key, placeholder="gsk_...",
-                              help="Get a free key at console.groq.com")
+    # ── Credentials ──
+    st.header("🔑 Credentials")
+    key_in = st.text_input("Groq API Key", type="password",
+                            value=st.session_state.api_key, placeholder="gsk_...",
+                            help="Get a free key at console.groq.com")
     st.session_state.api_key = key_in
 
     st.divider()
-    st.subheader("Pages")
-    if st.button("💬 Chat", use_container_width=True,
-                  type="primary" if st.session_state.page == "chat" else "secondary"):
-        st.session_state.page = "chat"
+
+    # ── New Chat ──
+    if st.button("✏️ New Chat", use_container_width=True, type="primary"):
+        _new_chat()
         st.rerun()
 
+    st.caption("Chats")
+
+    # ── Chat list ──
+    for sess in st.session_state.chat_sessions:
+        is_active = sess["thread_id"] == st.session_state.active_thread_id
+        name_col, del_col = st.columns([5, 1])
+        if name_col.button(
+            sess["title"],
+            key=f"chat_{sess['thread_id']}",
+            use_container_width=True,
+            type="primary" if is_active else "secondary",
+        ):
+            _save_current_chat()
+            _load_chat(sess["thread_id"])
+            st.rerun()
+        if del_col.button("✕", key=f"del_{sess['thread_id']}", use_container_width=True):
+            _delete_chat(sess["thread_id"])
+            st.rerun()
+
+    st.divider()
+
+    # ── View Timetable ──
     has_tt = bool(st.session_state.timetable)
     if st.button("📊 View Timetable", use_container_width=True,
                   type="primary" if st.session_state.page == "timetable" else "secondary",
@@ -733,19 +828,8 @@ with st.sidebar:
         st.rerun()
     if not has_tt:
         st.caption("_Generate a timetable first._")
-
-    history = st.session_state.get("timetable_history", [])
-    if history:
-        st.caption(f"📚 {len(history)} version(s) saved")
-
-    st.divider()
-    if st.button("🗑️ Reset Everything", type="secondary", use_container_width=True):
-        for k in ["constraints", "timetable", "timetable_history",
-                  "display_messages", "tt_updated", "agent", "memory"]:
-            st.session_state.pop(k, None)
-        st.session_state.thread_id = str(uuid.uuid4())
-        st.session_state.page = "chat"
-        st.rerun()
+    elif st.session_state.get("timetable_history"):
+        st.caption(f"📚 {len(st.session_state.timetable_history)} version(s) saved")
 
 # ── Page: Timetable ──────────────────────────────────────────────────────────────
 if st.session_state.page == "timetable":
@@ -857,6 +941,6 @@ if prompt := st.chat_input("Describe your timetable — professors, rooms, slots
         st.markdown(reply)
 
     st.session_state.display_messages.append({"role": "assistant", "content": reply})
-    if st.session_state.tt_updated:
-        st.session_state.tt_updated = False
-        st.rerun()
+    st.session_state.tt_updated = False
+    _save_current_chat()   # updates title in sidebar + persists state
+    st.rerun()             # refresh sidebar (title, View Timetable button state)
