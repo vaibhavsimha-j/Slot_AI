@@ -860,6 +860,18 @@ with st.sidebar:
 
     st.divider()
 
+    # ── Process pending JS action (from hidden input set by React setter trick) ──
+    _sai_pending = st.session_state.get("_sai_pending", "")
+    if _sai_pending:
+        st.session_state["_sai_pending"] = ""
+        _sai_cmd, _, _sai_tid = _sai_pending.partition(":")
+        if _sai_cmd == "rn" and _sai_tid:
+            st.session_state.renaming_chat_tid = _sai_tid
+            st.rerun()
+        elif _sai_cmd == "dl" and _sai_tid:
+            _delete_chat(_sai_tid)
+            st.rerun()
+
     # ── New Chat ──
     if st.button("New Chat +", use_container_width=True, type="secondary"):
         _new_chat()
@@ -867,7 +879,7 @@ with st.sidebar:
 
     st.caption("Chats")
 
-    # ── Chat list — fully native Streamlit widgets (WebSocket-based, no browser navigation) ──
+    # ── Chat list — only visible buttons, no hidden elements, no gaps ──
     for _sess in st.session_state.chat_sessions:
         _tid = _sess["thread_id"]
         _is_active = _tid == st.session_state.active_thread_id
@@ -887,27 +899,23 @@ with st.sidebar:
                 st.session_state.renaming_chat_tid = None
                 st.rerun()
         else:
-            # Invisible span marker — JS reads id to get tid on right-click.
-            # JS also collapses its container so it takes no vertical space.
-            st.markdown(f'<span id="sai-sw-{_tid}"></span>', unsafe_allow_html=True)
-            # Visible chat button — clean label, no UUID
             _label = ("› " if _is_active else "") + _sess["title"]
             if st.button(_label, key=f"_sw_{_tid}", use_container_width=True,
                          type="primary" if _is_active else "secondary"):
                 _save_current_chat()
                 _load_chat(_tid)
                 st.rerun()
-            # Hidden action buttons — JS hides their container via MutationObserver.
-            # .click() still works on hidden DOM nodes (WebSocket, no navigation).
-            _crn, _cdl = st.columns(2)
-            if _crn.button(f"rn​{_tid}", key=f"_rn_{_tid}", use_container_width=True):
-                st.session_state.renaming_chat_tid = _tid
-                st.rerun()
-            if _cdl.button(f"dl​{_tid}", key=f"_dl_{_tid}", use_container_width=True):
-                _delete_chat(_tid)
-                st.rerun()
 
-    # Context menu — plain display div, no hrefs, no onclick navigation
+    # ── Hidden text input: JS writes "rn:tid" or "dl:tid" via React setter ──
+    # CSS hides its container; input[placeholder] attribute makes it findable by JS.
+    st.markdown("""<style>
+div[data-testid="element-container"]:has(input[placeholder="__sai__"]) {display:none!important;}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(input[placeholder="__sai__"]) {display:none!important;}
+</style>""", unsafe_allow_html=True)
+    st.text_input("", key="_sai_pending", placeholder="__sai__",
+                  label_visibility="collapsed")
+
+    # ── Context menu div ──
     st.markdown("""
 <div id="sai-ctx-menu" style="display:none;position:fixed;z-index:99999;
   background:rgb(22,22,26);border:1px solid rgba(255,255,255,0.18);
@@ -923,114 +931,87 @@ with st.sidebar:
 </div>
 """, unsafe_allow_html=True)
 
-    # Iframe JS — fixes two issues:
-    # 1. Gap: inject display:none CSS for span-marker wrappers (removes from flex layout entirely)
-    # 2. rn/dl hiding + getTid: walk up to stVerticalBlock-level to handle stVerticalBlockBorderWrapper
-    st.components.v1.html("""
+    # ── Iframe JS: right-click context menu + React setter for rename/delete ──
+    # getTid uses button order matched against SAI_TIDS (Python-injected list).
+    # triggerAction uses React's native value setter + Enter key to trigger a Streamlit rerun.
+    _sai_tids = [s["thread_id"] for s in st.session_state.chat_sessions
+                 if st.session_state.renaming_chat_tid != s["thread_id"]]
+    st.components.v1.html(f"""
 <script>
-(function(){
+(function(){{
   var P=window.parent, PD=P.document;
+  var SAI_TIDS={_json_mod.dumps(_sai_tids)};
   var _ctxTid=null;
 
-  // Inject once into <head> — display:none removes span-marker wrappers from flex layout entirely,
-  // eliminating the gap that height:0 left behind due to the stVerticalBlock flex gap.
-  if(!PD.getElementById('sai-style')){
-    var s=PD.createElement('style');
-    s.id='sai-style';
-    s.textContent=
-      '[data-testid="stVerticalBlockBorderWrapper"]:has(span[id^="sai-sw-"]),' +
-      '[data-testid="element-container"]:has(span[id^="sai-sw-"]){display:none!important;}';
-    (PD.head||PD.documentElement).appendChild(s);
-  }
+  // React native setter trick: bypasses React's synthetic event tracking,
+  // then fires Enter key so Streamlit commits the new value immediately.
+  function triggerAction(action,tid){{
+    var input=PD.querySelector('input[placeholder="__sai__"]');
+    if(!input) return;
+    var setter=Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,'value').set;
+    setter.call(input,action+':'+tid);
+    input.dispatchEvent(new Event('input',{{bubbles:true}}));
+    input.dispatchEvent(new KeyboardEvent('keydown',{{key:'Enter',keyCode:13,bubbles:true}}));
+    input.dispatchEvent(new KeyboardEvent('keypress',{{key:'Enter',keyCode:13,bubbles:true}}));
+    input.dispatchEvent(new KeyboardEvent('keyup',{{key:'Enter',keyCode:13,bubbles:true}}));
+  }}
 
-  // Return the direct child of stVerticalBlock that contains el.
-  // Streamlit wraps sidebar items in stVerticalBlockBorderWrapper > element-container,
-  // so we must walk up to that level for correct sibling navigation and hiding.
-  function topChild(el){
-    var cur=el;
-    while(cur&&cur.parentElement){
-      var pt=cur.parentElement.getAttribute?cur.parentElement.getAttribute('data-testid'):'';
-      if(pt==='stVerticalBlock'||pt==='stSidebarUserContent') return cur;
-      cur=cur.parentElement;
-    }
-    return null;
-  }
-
-  // Hide rn/dl containers by hiding their stVerticalBlock-level wrapper
-  function cleanup(){
-    var btns=PD.querySelectorAll('button');
-    for(var i=0;i<btns.length;i++){
-      var t=btns[i].textContent.trim();
-      if(t.startsWith('rn​')||t.startsWith('dl​')){
-        var tc=topChild(btns[i]);
-        if(tc&&tc.style.display!=='none') tc.style.display='none';
-      }
-    }
-  }
-
-  // Find tid: walk up to stVerticalBlock-level, then scan previous siblings for sai-sw-* span.
-  // Works even when span markers are display:none — querySelector still finds them.
-  function getTid(btn){
-    var tc=topChild(btn);
-    if(!tc) return null;
-    var prev=tc.previousElementSibling;
-    for(var i=0;i<4&&prev;i++){
-      var sw=prev.querySelector('span[id^="sai-sw-"]');
-      if(sw) return sw.id.slice(7);
-      prev=prev.previousElementSibling;
-    }
-    return null;
-  }
-
-  function clickHiddenBtn(prefix,tid){
-    var target=prefix+'​'+tid;
-    var btns=PD.querySelectorAll('button');
-    for(var i=0;i<btns.length;i++){
-      if(btns[i].textContent.trim()===target){btns[i].click();return;}
-    }
-  }
-
-  cleanup();
-  if(P._saiObs) P._saiObs.disconnect();
-  P._saiObs=new MutationObserver(cleanup);
-  P._saiObs.observe(PD.body,{childList:true,subtree:true});
+  // Identify which chat was right-clicked by matching the button's DOM order
+  // against SAI_TIDS (the list of visible-chat tids, Python-injected).
+  // Chat buttons: in sidebar, not in a column (no st.columns wrapping), not special text.
+  function getTid(btn){{
+    var sidebar=PD.querySelector('[data-testid="stSidebar"]');
+    if(!sidebar) return null;
+    var allBtns=sidebar.querySelectorAll('button');
+    var chatBtns=[];
+    for(var i=0;i<allBtns.length;i++){{
+      var b=allBtns[i];
+      // Skip buttons inside columns (Save/Cancel of rename form)
+      if(b.closest('[data-testid="column"]')) continue;
+      // Skip known non-chat buttons
+      var t=b.textContent.trim();
+      if(t==='New Chat +'||t.indexOf('View Timetable')!==-1) continue;
+      chatBtns.push(b);
+    }}
+    var idx=chatBtns.indexOf(btn);
+    return (idx>=0&&idx<SAI_TIDS.length)?SAI_TIDS[idx]:null;
+  }}
 
   if(P._saiCtxH) PD.removeEventListener('contextmenu',P._saiCtxH);
-  P._saiCtxH=function(e){
+  P._saiCtxH=function(e){{
     var menu=PD.getElementById('sai-ctx-menu');
     if(!menu) return;
-    // Only trigger for buttons inside the sidebar
     var btn=e.target&&e.target.closest?e.target.closest('button'):null;
-    if(!btn||!btn.closest('[data-testid="stSidebar"]')){menu.style.display='none';return;}
-    var t=btn.textContent.trim();
-    if(t.startsWith('rn​')||t.startsWith('dl​')||
-       t==='Save'||t==='Cancel'){menu.style.display='none';return;}
+    if(!btn||!btn.closest('[data-testid="stSidebar"]')){{
+      menu.style.display='none'; return;
+    }}
     var tid=getTid(btn);
-    if(!tid){menu.style.display='none';return;}
+    if(!tid){{menu.style.display='none'; return;}}
     e.preventDefault();
     _ctxTid=tid;
     menu.style.left=e.clientX+'px';
     menu.style.top=e.clientY+'px';
     menu.style.display='block';
-  };
+  }};
   PD.addEventListener('contextmenu',P._saiCtxH);
 
   if(P._saiClickH) PD.removeEventListener('click',P._saiClickH);
-  P._saiClickH=function(e){
+  P._saiClickH=function(e){{
     var menu=PD.getElementById('sai-ctx-menu');
     if(!menu) return;
-    if(e.target&&e.target.id==='sai-ctx-rename-btn'){
-      e.stopPropagation();menu.style.display='none';
-      if(_ctxTid) clickHiddenBtn('rn',_ctxTid);return;
-    }
-    if(e.target&&e.target.id==='sai-ctx-delete-btn'){
-      e.stopPropagation();menu.style.display='none';
-      if(_ctxTid) clickHiddenBtn('dl',_ctxTid);return;
-    }
+    if(e.target&&e.target.id==='sai-ctx-rename-btn'){{
+      e.stopPropagation(); menu.style.display='none';
+      if(_ctxTid) triggerAction('rn',_ctxTid); return;
+    }}
+    if(e.target&&e.target.id==='sai-ctx-delete-btn'){{
+      e.stopPropagation(); menu.style.display='none';
+      if(_ctxTid) triggerAction('dl',_ctxTid); return;
+    }}
     if(!e.target.closest('#sai-ctx-menu')) menu.style.display='none';
-  };
+  }};
   PD.addEventListener('click',P._saiClickH);
-})();
+}})();
 </script>
 """, height=0)
 
