@@ -27,7 +27,8 @@ _DEFAULTS = dict(
     api_key="", model=MODELS[0],
     constraints={}, timetable={}, timetable_history=[],
     display_messages=[], tt_updated=False,
-    thread_id=str(uuid.uuid4())
+    thread_id=str(uuid.uuid4()),
+    page="chat",
 )
 for k, v in _DEFAULTS.items():
     st.session_state.setdefault(k, v)
@@ -641,7 +642,7 @@ Workflow:
 1. User gives full info -> call extract_constraints (populate all args), then solve_timetable
 2. Info incomplete -> call extract_constraints with what you have, tell user what is missing
 3. User wants a change -> call edit_timetable with only the changed constraints
-4. After successful solve: confirm status (OPTIMAL/FEASIBLE). UI shows the timetable automatically.
+4. After successful solve: confirm status (OPTIMAL/FEASIBLE). Tell the user to click 'View Timetable' in the sidebar to see it.
 5. INFEASIBLE: diagnose which constraints conflict.
 6. User asks to see/show/display/view the timetable -> call show_timetable immediately.\
 """)
@@ -718,42 +719,63 @@ with st.sidebar:
     # so no graph rebuild is needed — conversation context is fully preserved.
 
     st.divider()
+    st.subheader("Pages")
+    if st.button("💬 Chat", use_container_width=True,
+                  type="primary" if st.session_state.page == "chat" else "secondary"):
+        st.session_state.page = "chat"
+        st.rerun()
+
+    has_tt = bool(st.session_state.timetable)
+    if st.button("📊 View Timetable", use_container_width=True,
+                  type="primary" if st.session_state.page == "timetable" else "secondary",
+                  disabled=not has_tt):
+        st.session_state.page = "timetable"
+        st.rerun()
+    if not has_tt:
+        st.caption("_Generate a timetable first._")
+
+    history = st.session_state.get("timetable_history", [])
+    if history:
+        st.caption(f"📚 {len(history)} version(s) saved")
+
+    st.divider()
     if st.button("🗑️ Reset Everything", type="secondary", use_container_width=True):
         for k in ["constraints", "timetable", "timetable_history",
                   "display_messages", "tt_updated", "agent", "memory"]:
             st.session_state.pop(k, None)
         st.session_state.thread_id = str(uuid.uuid4())
+        st.session_state.page = "chat"
         st.rerun()
 
-    st.divider()
-    st.subheader("📤 Export")
+# ── Page: Timetable ──────────────────────────────────────────────────────────────
+if st.session_state.page == "timetable":
+    col_back, col_title = st.columns([1, 6])
+    if col_back.button("← Back"):
+        st.session_state.page = "chat"
+        st.rerun()
+    col_title.subheader("📊 Timetable")
+
     if st.session_state.timetable:
         pdf_data  = _export_pdf()
         xlsx_data = _export_excel()
-        c1, c2 = st.columns(2)
+        dl1, dl2, _ = st.columns([1, 1, 4])
         if pdf_data:
-            c1.download_button("⬇️ PDF", pdf_data, "timetable.pdf",
-                               "application/pdf", use_container_width=True)
-        else:
-            c1.caption("pip install fpdf2")
-        c2.download_button("⬇️ Excel", xlsx_data, "timetable.xlsx",
-                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                           use_container_width=True)
-        history = st.session_state.get("timetable_history", [])
-        if history:
-            st.divider()
-            st.caption(f"📚 {len(history)} version(s) saved")
+            dl1.download_button("⬇️ All (PDF)", pdf_data, "timetable.pdf",
+                                "application/pdf", use_container_width=True)
+        dl2.download_button("⬇️ All (Excel)", xlsx_data, "timetable.xlsx",
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True)
+        st.divider()
+        _show_tt(st.session_state.timetable, key_prefix="view")
     else:
-        st.caption("_Generate a timetable first._")
+        st.info("No timetable generated yet. Go to Chat and describe your schedule.")
+    st.stop()
 
-# ── Timetable Display ─────────────────────────────────────────────────────────────
-if st.session_state.timetable:
-    st.subheader("📊 Current Timetable")
-    _show_tt(st.session_state.timetable, key_prefix="main")
-    st.divider()
-
-# ── Chat ──────────────────────────────────────────────────────────────────────────
+# ── Page: Chat ───────────────────────────────────────────────────────────────────
 st.subheader("💬 Chat with SLOT AI")
+
+if st.session_state.timetable:
+    st.success("Timetable ready — click **📊 View Timetable** in the sidebar to see it.")
 
 for msg in st.session_state.get("display_messages", []):
     with st.chat_message(msg["role"]):
@@ -773,12 +795,8 @@ if prompt := st.chat_input("Describe your timetable — professors, rooms, slots
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Inject API key into env so ChatGroq finds it regardless of async context
     os.environ["GROQ_API_KEY"] = st.session_state.api_key
 
-    # Point the thread-local session id at this session's store dict.
-    # LangGraph invoke() is synchronous — tools run on the same OS thread,
-    # so _tl.session_id is visible inside every tool call without any context copying.
     tid = st.session_state.thread_id
     _tl.session_id = tid
     _STORE[tid] = {
@@ -813,9 +831,8 @@ if prompt := st.chat_input("Describe your timetable — professors, rooms, slots
                 else:
                     reply = f"⚠️ Error ({type(e).__name__}): {err[:300]}"
 
-        # Sync state from _STORE — tools write timetable/constraints there directly.
-        # Timetable/constraints are NOT echoed back in tool return values (keeps
-        # message history small and avoids Groq rate limits from token accumulation).
+        # Sync timetable/constraints from _STORE — tools write there directly.
+        # Not echoed in tool return values (keeps message history small → fewer tokens).
         sess = _STORE.get(tid, _STORE.get("_default", {}))
         if sess.get("constraints"):
             st.session_state.constraints = sess["constraints"]
@@ -826,14 +843,13 @@ if prompt := st.chat_input("Describe your timetable — professors, rooms, slots
         if sess.get("timetable_history"):
             st.session_state.timetable_history = sess["timetable_history"]
 
-        # show_timetable sets tt_updated in _STORE; also check message flag as fallback
+        # show_timetable tool: check message flag as fallback
         if result and not st.session_state.tt_updated:
-            for msg in result.get("messages", []):
-                raw = getattr(msg, "content", "")
+            for m in result.get("messages", []):
+                raw = getattr(m, "content", "")
                 if isinstance(raw, str):
                     try:
-                        data = json.loads(raw)
-                        if data.get("show_timetable") and st.session_state.timetable:
+                        if json.loads(raw).get("show_timetable") and st.session_state.timetable:
                             st.session_state.tt_updated = True
                     except (json.JSONDecodeError, ValueError):
                         pass
@@ -842,4 +858,5 @@ if prompt := st.chat_input("Describe your timetable — professors, rooms, slots
 
     st.session_state.display_messages.append({"role": "assistant", "content": reply})
     if st.session_state.tt_updated:
+        st.session_state.tt_updated = False
         st.rerun()
