@@ -973,6 +973,8 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(input[placeholder="__sai__"]
       var b=allBtns[i];
       // Skip buttons inside columns (Save/Cancel of rename form)
       if(b.closest('[data-testid="column"]')) continue;
+      // Skip context menu's own buttons (they're in sidebar DOM but not chat buttons)
+      if(b.closest('#sai-ctx-menu')) continue;
       // Skip known non-chat buttons
       var t=b.textContent.trim();
       if(t==='New Chat +'||t.indexOf('View Timetable')!==-1) continue;
@@ -987,7 +989,7 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(input[placeholder="__sai__"]
     var menu=PD.getElementById('sai-ctx-menu');
     if(!menu) return;
     var btn=e.target&&e.target.closest?e.target.closest('button'):null;
-    if(!btn||!btn.closest('[data-testid="stSidebar"]')){{
+    if(!btn||!btn.closest('[data-testid="stSidebar"]')||btn.closest('#sai-ctx-menu')){{
       menu.style.display='none'; return;
     }}
     var tid=getTid(btn);
