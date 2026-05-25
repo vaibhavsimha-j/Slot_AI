@@ -717,20 +717,13 @@ with st.sidebar:
     model_in = st.selectbox("Model", MODELS, index=MODELS.index(st.session_state.model))
     st.session_state.api_key = key_in
     st.session_state.model   = model_in
-
-    # Rebuild agent if model/key changed
-    prev_key   = st.session_state.get("_prev_key")
-    prev_model = st.session_state.get("_prev_model")
-    if (key_in and model_in) and (key_in != prev_key or model_in != prev_model):
-        st.session_state.agent      = _build_graph()
-        st.session_state._prev_key  = key_in
-        st.session_state._prev_model = model_in
+    # Key and model are injected into os.environ / _STORE before every agent.invoke(),
+    # so no graph rebuild is needed — conversation context is fully preserved.
 
     st.divider()
     if st.button("🗑️ Reset Everything", type="secondary", use_container_width=True):
         for k in ["constraints", "timetable", "timetable_history",
-                  "display_messages", "tt_updated", "agent", "memory",
-                  "_prev_key", "_prev_model"]:
+                  "display_messages", "tt_updated", "agent", "memory"]:
             st.session_state.pop(k, None)
         st.session_state.thread_id = str(uuid.uuid4())
         st.rerun()
