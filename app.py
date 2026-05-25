@@ -900,28 +900,32 @@ with st.sidebar:
                  .replace("&", "&amp;").replace("<", "&lt;")
                  .replace(">", "&gt;").replace('"', "&quot;"))
         if _renaming_tid == _tid:
-            # Inline rename — Save uses onclick JS (reads input value), Cancel is a plain link
-            _save_js = (
+            # Save: anchor tag whose href is built by onclick before navigation fires.
+            # Anchor-tag navigation is intercepted by Streamlit's React Router as a soft
+            # rerun — unlike window.location.href which triggers a hard reload + lost state.
+            _save_onclick = (
                 f"var e=document.getElementById('sai-ri-{_tid}');"
-                f"window.location.href='?ctx_action=save_rename&ctx_tid={_tid}&ctx_title='+encodeURIComponent(e?e.value:'');"
-                f"return false;"
+                f"this.href='?ctx_action=save_rename&ctx_tid={_tid}&ctx_title='"
+                f"+encodeURIComponent(e?e.value:'');"
+                f"return true;"
             )
             _chat_items += (
                 f'<div class="sai-rename-row">'
                 f'<input id="sai-ri-{_tid}" class="sai-rename-input" type="text" value="{_safe}">'
                 f'<div class="sai-rename-actions">'
-                f'<button onclick="{_save_js}">Save</button>'
+                f'<a href="#" class="sai-rename-save" onclick="{_save_onclick}">Save</a>'
                 f'<a href="?ctx_action=cancel_rename" class="sai-rename-cancel">Cancel</a>'
                 f'</div></div>'
             )
         else:
             _ac  = " sai-active" if _tid == _active_tid else ""
             _arr = "› " if _tid == _active_tid else ""
-            # onclick does plain URL navigation — no external JS function needed
+            # Anchor tag — Streamlit's React Router intercepts <a href> clicks as soft
+            # reruns, preserving session state. window.location.href causes a hard reload.
             _chat_items += (
-                f'<button class="sai-chat-btn{_ac}" data-tid="{_tid}" '
-                f'onclick="window.location.href=\'?ctx_action=switch&ctx_tid={_tid}\'">'
-                f'{_arr}{_safe}</button>'
+                f'<a href="?ctx_action=switch&ctx_tid={_tid}" '
+                f'class="sai-chat-btn{_ac}" data-tid="{_tid}">'
+                f'{_arr}{_safe}</a>'
             )
 
     # HTML: chat buttons + hidden context-menu div + CSS (no <script> — Streamlit strips those)
@@ -941,7 +945,8 @@ with st.sidebar:
   border:1px solid rgba(255,255,255,0.12)!important;border-radius:6px!important;
   font-size:14px!important;cursor:pointer!important;
   white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;
-  font-family:inherit!important;box-sizing:border-box!important;}}
+  font-family:inherit!important;box-sizing:border-box!important;
+  text-decoration:none!important;}}
 .sai-chat-btn:hover{{background:rgba(255,255,255,0.13)!important;
   border-color:rgba(255,255,255,0.28)!important;}}
 .sai-active{{background:rgba(255,255,255,0.16)!important;
@@ -952,12 +957,12 @@ with st.sidebar:
   border:1px solid rgba(255,255,255,0.25);border-radius:6px;
   font-size:14px;font-family:inherit;outline:none;}}
 .sai-rename-actions{{display:flex;gap:4px;align-items:center;}}
-.sai-rename-actions button,.sai-rename-cancel{{
+.sai-rename-save,.sai-rename-cancel{{
   flex:1;padding:4px 0;font-size:12px;font-family:inherit;text-align:center;
   border:1px solid rgba(255,255,255,0.2)!important;border-radius:4px!important;
   background:rgba(255,255,255,0.07)!important;color:rgba(255,255,255,0.8)!important;
   cursor:pointer!important;text-decoration:none!important;display:block!important;}}
-.sai-rename-actions button:hover,.sai-rename-cancel:hover{{background:rgba(255,255,255,0.15)!important;}}
+.sai-rename-save:hover,.sai-rename-cancel:hover{{background:rgba(255,255,255,0.15)!important;}}
 .sai-ctx-item{{display:block!important;padding:5px 10px!important;
   color:rgba(255,255,255,0.82)!important;font-size:12px!important;
   text-decoration:none!important;border-radius:4px!important;font-family:inherit;}}
