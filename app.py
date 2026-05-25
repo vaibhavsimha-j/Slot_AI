@@ -335,8 +335,9 @@ def extract_constraints(
     sess["constraints"] = merged
     miss = _missing(merged)
     return json.dumps({
-        "status":  "ready" if not miss else "incomplete",
-        "missing": miss,
+        "status":      "ready" if not miss else "incomplete",
+        "missing":     miss,
+        "constraints": merged,
         "summary": {
             "professors": list(merged.get("teachers", {}).keys()),
             "subjects":   [s for ss in merged.get("teachers", {}).values() for s in ss],
@@ -380,6 +381,7 @@ def solve_timetable() -> str:
         return json.dumps({
             "status":        "success",
             "solver_status": result["solver_status"],
+            "timetable":     result["timetable"],
             "days":          list(result["timetable"].keys()),
             "total_cells":   (
                 len(c.get("slots", [])) *
@@ -447,6 +449,8 @@ def edit_timetable(
         return json.dumps({
             "status":        "success",
             "solver_status": result["solver_status"],
+            "timetable":     result["timetable"],
+            "constraints":   merged,
             "message":       "Timetable updated successfully.",
         })
 
@@ -590,7 +594,7 @@ def show_timetable() -> str:
     if not tt:
         return json.dumps({"status": "empty", "message": "No timetable has been generated yet. Please provide scheduling details first."})
     sess["tt_updated"] = True
-    return json.dumps({"status": "ok", "message": "Timetable is now displayed in the UI."})
+    return json.dumps({"status": "ok", "show_timetable": True, "message": "Timetable is now displayed in the UI."})
 
 
 # ── LangGraph Agent ──────────────────────────────────────────────────────────────
@@ -799,6 +803,7 @@ if prompt := st.chat_input("Describe your timetable — professors, rooms, slots
                 reply = result["messages"][-1].content
             except Exception as e:
                 err = str(e)
+                result = None
                 if "429" in err or "rate_limit" in err.lower():
                     model_now = st.session_state.get("model", MODELS[0])
                     if "8b" in model_now:
@@ -810,12 +815,39 @@ if prompt := st.chat_input("Describe your timetable — professors, rooms, slots
                 else:
                     reply = f"⚠️ Error ({type(e).__name__}): {err[:300]}"
 
-        # Sync tool-updated state back into session_state
-        sess = _STORE.get(tid, {})
-        st.session_state.constraints       = sess.get("constraints",       st.session_state.constraints)
-        st.session_state.timetable         = sess.get("timetable",         st.session_state.timetable)
-        st.session_state.timetable_history = sess.get("timetable_history", st.session_state.timetable_history)
-        st.session_state.tt_updated        = sess.get("tt_updated", False)
+        # Parse tool results directly from the LangGraph message chain.
+        # This works on all platforms (Streamlit Cloud, local) because it reads
+        # from the agent's return value — no thread-local or ContextVar needed.
+        if result:
+            for msg in result.get("messages", []):
+                raw = getattr(msg, "content", "")
+                if not isinstance(raw, str):
+                    continue
+                try:
+                    data = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+
+                # extract_constraints returns "constraints"
+                if "constraints" in data and isinstance(data["constraints"], dict):
+                    st.session_state.constraints = data["constraints"]
+
+                # solve_timetable / edit_timetable return "timetable" on success
+                if (data.get("status") == "success"
+                        and "timetable" in data
+                        and isinstance(data["timetable"], dict)
+                        and data["timetable"]):
+                    st.session_state.timetable  = data["timetable"]
+                    st.session_state.tt_updated = True
+
+                # show_timetable returns show_timetable: true
+                if data.get("show_timetable") and st.session_state.timetable:
+                    st.session_state.tt_updated = True
+
+        # Also sync history from _STORE (only written inside tools, not in return value)
+        sess = _STORE.get(tid, _STORE.get("_default", {}))
+        if sess.get("timetable_history"):
+            st.session_state.timetable_history = sess["timetable_history"]
 
         st.markdown(reply)
 
