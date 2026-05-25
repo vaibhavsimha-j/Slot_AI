@@ -975,6 +975,8 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(input[placeholder="__sai__"]
       if(b.closest('[data-testid="column"]')) continue;
       // Skip context menu's own buttons (they're in sidebar DOM but not chat buttons)
       if(b.closest('#sai-ctx-menu')) continue;
+      // Skip eye-toggle inside password/text inputs (e.g. Groq API key field)
+      if(b.closest('[data-testid="stTextInput"]')) continue;
       // Skip known non-chat buttons
       var t=b.textContent.trim();
       if(t==='New Chat +'||t.indexOf('View Timetable')!==-1) continue;
