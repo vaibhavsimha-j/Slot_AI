@@ -787,6 +787,7 @@ st.title("📅 SLOT AI")
 # Inject CSS: remove red/orange from buttons; keep everything dark-theme neutral
 st.markdown("""
 <style>
+/* ── All sidebar buttons: dark-theme neutral ── */
 section[data-testid="stSidebar"] button {
     background-color: rgba(255,255,255,0.06) !important;
     color: rgba(255,255,255,0.88) !important;
@@ -801,6 +802,58 @@ section[data-testid="stSidebar"] button[kind="primary"] {
     background-color: rgba(255,255,255,0.16) !important;
     border-color: rgba(255,255,255,0.35) !important;
     font-weight: 600 !important;
+}
+
+/* ── Password field: flush eye icon to right edge ── */
+section[data-testid="stSidebar"] [data-testid="stTextInput"] [data-baseweb="base-input"] {
+    padding-right: 0 !important;
+}
+section[data-testid="stSidebar"] [data-testid="stTextInput"] [data-baseweb="base-input"] > div {
+    padding-right: 0 !important;
+}
+
+/* ── Chat list rows: fuse name button + dots into one visual block ── */
+section[data-testid="stSidebar"] div.chat-row [data-testid="stHorizontalBlock"] {
+    gap: 0 !important;
+}
+section[data-testid="stSidebar"] div.chat-row [data-testid="column"]:first-child button {
+    border-top-right-radius: 0 !important;
+    border-bottom-right-radius: 0 !important;
+    border-right: none !important;
+}
+section[data-testid="stSidebar"] div.chat-row [data-testid="column"]:last-child button {
+    border-top-left-radius: 0 !important;
+    border-bottom-left-radius: 0 !important;
+    border-left: 1px solid rgba(255,255,255,0.08) !important;
+    padding: 0 8px !important;
+    min-width: 32px !important;
+    max-width: 32px !important;
+    font-size: 13px !important;
+    letter-spacing: 1px !important;
+    color: rgba(255,255,255,0.45) !important;
+}
+
+/* ── Hide the popover chevron arrow ── */
+section[data-testid="stSidebar"] [data-testid="stPopover"] button svg,
+section[data-testid="stSidebar"] [data-testid="stPopover"] button [data-testid="chevron-down"] {
+    display: none !important;
+}
+
+/* ── Popover menu items: small, compact ── */
+[data-testid="stPopoverBody"] button {
+    font-size: 13px !important;
+    padding: 4px 12px !important;
+    height: auto !important;
+    min-height: 0 !important;
+    background: transparent !important;
+    border: none !important;
+    color: rgba(255,255,255,0.85) !important;
+    border-radius: 4px !important;
+    width: 100% !important;
+    text-align: left !important;
+}
+[data-testid="stPopoverBody"] button:hover {
+    background: rgba(255,255,255,0.1) !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -827,22 +880,23 @@ with st.sidebar:
         is_active = sess["thread_id"] == st.session_state.active_thread_id
 
         if st.session_state.renaming_chat_tid == sess["thread_id"]:
-            # Inline rename input
+            # Inline rename — stacked (no columns) so column-fusion CSS doesn't apply
             new_name = st.text_input(
                 "Rename", value=sess["title"],
                 key=f"rename_input_{sess['thread_id']}",
                 label_visibility="collapsed",
             )
-            s_col, c_col = st.columns(2)
-            if s_col.button("Save", key=f"rename_save_{sess['thread_id']}", use_container_width=True):
+            if st.button("Save", key=f"rename_save_{sess['thread_id']}", use_container_width=True):
                 sess["title"] = new_name.strip() or sess["title"]
                 st.session_state.renaming_chat_tid = None
                 st.rerun()
-            if c_col.button("Cancel", key=f"rename_cancel_{sess['thread_id']}", use_container_width=True):
+            if st.button("Cancel", key=f"rename_cancel_{sess['thread_id']}", use_container_width=True):
                 st.session_state.renaming_chat_tid = None
                 st.rerun()
         else:
             label = ("› " if is_active else "") + sess["title"]
+            # Wrap in a div.chat-row so the fusion CSS targets only these rows
+            st.markdown('<div class="chat-row">', unsafe_allow_html=True)
             name_col, menu_col = st.columns([5, 1])
             if name_col.button(
                 label,
@@ -853,14 +907,14 @@ with st.sidebar:
                 _save_current_chat()
                 _load_chat(sess["thread_id"])
                 st.rerun()
-            with menu_col.popover("···", use_container_width=True):
-                if st.button("Rename", key=f"rename_btn_{sess['thread_id']}", use_container_width=True):
+            with menu_col.popover("•••", use_container_width=True):
+                if st.button("Rename", key=f"rename_btn_{sess['thread_id']}"):
                     st.session_state.renaming_chat_tid = sess["thread_id"]
                     st.rerun()
-                st.divider()
-                if st.button("Delete", key=f"delete_btn_{sess['thread_id']}", use_container_width=True):
+                if st.button("Delete", key=f"delete_btn_{sess['thread_id']}"):
                     _delete_chat(sess["thread_id"])
                     st.rerun()
+            st.markdown('</div>', unsafe_allow_html=True)
 
     st.divider()
 
