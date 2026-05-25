@@ -2,9 +2,9 @@
 pip install streamlit langchain-groq langgraph langchain-core ortools pydantic pandas openpyxl fpdf2
 streamlit run app.py
 """
-import os, json, re, copy, uuid, contextvars
+import os, json, copy, uuid, contextvars
 from datetime import datetime
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, Dict, List, Optional, TypedDict
 import streamlit as st
 import pandas as pd
 from io import BytesIO
@@ -57,20 +57,6 @@ def _get_llm(t: float = 0.0) -> ChatGroq:
         model=_s().get("model", MODELS[0]),
         temperature=t,
     )
-
-def _extract_json(s: str):
-    s = re.sub(r"^```[a-z]*\n?", "", s.strip())
-    s = re.sub(r"\n?```$", "", s).strip()
-    try:
-        return json.loads(s)
-    except Exception:
-        m = re.search(r"\{.*\}", s, re.DOTALL)
-        if m:
-            try:
-                return json.loads(m.group())
-            except Exception:
-                pass
-    return None
 
 def _cell(e):
     if isinstance(e, dict):
@@ -254,59 +240,6 @@ def _ortools_solve(constraints: dict) -> dict:
     return {"status": "timeout", "reason": "Solver timed out. Try fewer constraints."}
 
 # ── Constraint Merge ─────────────────────────────────────────────────────────────
-_EXTRACTION_PROMPT = """\
-Extract scheduling constraints from the user text as strict JSON.
-
-Output schema (include ONLY keys that appear or need to change):
-{{
-  "teachers": {{"ProfName": ["Subject1", "Subject2"]}},
-  "rooms": ["A", "B"],
-  "slots": ["09:00-09:50"],
-  "days":  ["Monday"],
-  "room_restrictions":        {{"Subject": ["ForbiddenRoom"]}},
-  "professor_unavailability": {{"ProfName": ["Day"]}},
-  "slot_restrictions":        {{"Subject": ["AllowedSlot1", "AllowedSlot2"]}},
-  "max_slots_per_day":        {{"ProfName": 3}},
-  "fixed_assignments": [{{"day":"","slot":"","room":"","subject":""}}],
-  "custom_rules": ["verbatim rule text"]
-}}
-
-Extraction rules — follow these EXACTLY:
-1. Professor–subject mapping:
-   - "Subject-Professor" pairs (e.g. "AI-Vaibhav") → {{"Vaibhav": ["AI"]}}
-   - Parallel lists "Subjects: A,B,C  Professors: X,Y,Z" → positional match:
-     A→X, B→Y, C→Z → {{"X":["A"], "Y":["B"], "Z":["C"]}}
-   - Multiple subjects same professor → merge into one key: {{"X":["A","C"]}}
-   - Strip titles (Dr., Prof.) from professor names before using as keys
-2. slot_restrictions:
-   - "X only in morning" → list the actual morning slots from available slots {slots}
-   - "X and Y in morning slots (HH:MM-HH:MM)" → those exact slot strings
-3. room_restrictions:
-   - "X not in Room D" → {{"X": ["D"]}}
-4. Copy names EXACTLY as written (case-sensitive, preserve spaces)
-5. Do NOT invent constraints not mentioned in the user text
-6. If the user only updates availability/restrictions, omit rooms/slots/days/teachers
-
-Available slots for reference: {slots}
-
-Existing constraints (already extracted — do not repeat, only add/update):
-{existing}
-
-User text:
-{text}
-
-JSON (output ONLY the JSON object, no explanation):"""
-
-def _llm_extract(text: str, current: dict) -> dict:
-    raw = _get_llm(0.0).invoke(
-        _EXTRACTION_PROMPT.format(
-            slots=current.get("slots", []),
-            existing=json.dumps(current, indent=2),
-            text=text,
-        )
-    ).content
-    return _extract_json(raw) or {}
-
 def _merge(current: dict, parsed: dict) -> dict:
     c = copy.deepcopy(current)
     for k, v in parsed.items():
@@ -338,19 +271,47 @@ def _merge(current: dict, parsed: dict) -> dict:
 
 # ── Tools ────────────────────────────────────────────────────────────────────────
 @tool
-def extract_constraints(user_text: str) -> str:
-    """Extract and store scheduling constraints from user text.
-    Call whenever the user provides professors, subjects, rooms, time slots,
-    days, unavailability, room restrictions, or any other scheduling rules."""
-    sess     = _s()
-    current  = sess.get("constraints", {})
-    parsed   = _llm_extract(user_text, current)
-    if not parsed:
-        return json.dumps({"status": "error", "message": "Could not parse constraints from input."})
+def extract_constraints(
+    teachers: Dict[str, List[str]],
+    rooms: List[str],
+    slots: List[str],
+    days: List[str],
+    room_restrictions: Optional[Dict[str, List[str]]] = None,
+    slot_restrictions: Optional[Dict[str, List[str]]] = None,
+    professor_unavailability: Optional[Dict[str, List[str]]] = None,
+    max_slots_per_day: Optional[Dict[str, int]] = None,
+    custom_rules: Optional[List[str]] = None,
+) -> str:
+    """Store timetable scheduling constraints. YOU (the agent) extract these from the
+    user's message and pass them as typed arguments — no inner LLM call is made here.
+
+    teachers: professor-name → list of subjects. Strip titles (Dr./Prof.).
+      e.g. {"Vaibhav": ["AI", "ML"], "Simha": ["DSA", "AA"], "Bob": ["DBMS"]}
+    rooms: list of room names.  e.g. ["A", "B", "C", "D"]
+    slots: list of time slots.  e.g. ["09:00-09:50", "09:50-10:40", "10:55-11:45"]
+    days:  list of working days. e.g. ["Monday", "Tuesday", "Wednesday"]
+    room_restrictions: subjects forbidden from certain rooms.
+      e.g. {"CN": ["D"]}  means CN must never be in Room D
+    slot_restrictions: subjects restricted to specific slots only.
+      e.g. {"AI": ["09:00-09:50", "09:50-10:40"], "ML": ["09:00-09:50", "09:50-10:40"]}
+    professor_unavailability: days a professor cannot teach.
+      e.g. {"Alice": ["Friday"]}
+    max_slots_per_day: max classes a professor can have in one day.
+      e.g. {"Vaibhav": 2}
+    custom_rules: any other rules as plain-text strings.
+    """
+    sess    = _s()
+    current = sess.get("constraints", {})
+    parsed: dict = {"teachers": teachers, "rooms": rooms, "slots": slots, "days": days}
+    if room_restrictions:         parsed["room_restrictions"]        = room_restrictions
+    if slot_restrictions:         parsed["slot_restrictions"]         = slot_restrictions
+    if professor_unavailability:  parsed["professor_unavailability"]  = professor_unavailability
+    if max_slots_per_day:         parsed["max_slots_per_day"]         = max_slots_per_day
+    if custom_rules:              parsed["custom_rules"]              = custom_rules
 
     merged = _merge(current, parsed)
     sess["constraints"] = merged
-    miss   = _missing(merged)
+    miss = _missing(merged)
     return json.dumps({
         "status":  "ready" if not miss else "incomplete",
         "missing": miss,
@@ -409,24 +370,46 @@ def solve_timetable() -> str:
 
 
 @tool
-def edit_timetable(instruction: str) -> str:
-    """Apply an edit or update to the current timetable.
-    Use for: updating constraints and regenerating, swapping subjects between rooms,
-    or any modification to an existing timetable."""
+def edit_timetable(
+    room_restrictions: Optional[Dict[str, List[str]]] = None,
+    slot_restrictions: Optional[Dict[str, List[str]]] = None,
+    professor_unavailability: Optional[Dict[str, List[str]]] = None,
+    max_slots_per_day: Optional[Dict[str, int]] = None,
+    fixed_assignments: Optional[List[Dict[str, str]]] = None,
+    custom_rules: Optional[List[str]] = None,
+    clear_fixed_assignments: bool = False,
+) -> str:
+    """Update constraints and regenerate the timetable using OR-Tools.
+    Pass ONLY the constraints that changed. The solver re-runs with the merged constraints.
+
+    room_restrictions: subjects forbidden from rooms. e.g. {"CN": ["D"]}
+    slot_restrictions: subjects limited to certain slots. e.g. {"AI": ["09:00-09:50"]}
+    professor_unavailability: professors unavailable on certain days. e.g. {"Bob": ["Friday"]}
+    max_slots_per_day: teaching load limit per professor. e.g. {"Vaibhav": 2}
+    fixed_assignments: pin a specific subject to a cell.
+      e.g. [{"day":"Monday","slot":"09:00-09:50","room":"A","subject":"AI"}]
+    custom_rules: additional rule text.
+    clear_fixed_assignments: set True when replacing all pinned cells (e.g. a swap).
+    """
     sess = _s()
     if not sess.get("timetable"):
         return json.dumps({"status": "error", "message": "No timetable exists yet. Generate one first."})
 
     current = sess.get("constraints", {})
-    parsed  = _llm_extract(instruction, current)
+    if clear_fixed_assignments:
+        current.pop("fixed_assignments", None)
 
-    if parsed:
-        if "fixed_assignments" in parsed:
-            current.pop("fixed_assignments", None)
-        merged = _merge(current, parsed)
-        sess["constraints"] = merged
+    delta: dict = {}
+    if room_restrictions:         delta["room_restrictions"]        = room_restrictions
+    if slot_restrictions:         delta["slot_restrictions"]         = slot_restrictions
+    if professor_unavailability:  delta["professor_unavailability"]  = professor_unavailability
+    if max_slots_per_day:         delta["max_slots_per_day"]         = max_slots_per_day
+    if fixed_assignments:         delta["fixed_assignments"]         = fixed_assignments
+    if custom_rules:              delta["custom_rules"]              = custom_rules
 
-    result = _ortools_solve(sess["constraints"])
+    merged = _merge(current, delta)
+    sess["constraints"] = merged
+    result = _ortools_solve(merged)
 
     if result["status"] == "success":
         existing = sess.get("timetable", {})
@@ -434,7 +417,7 @@ def edit_timetable(instruction: str) -> str:
             sess.setdefault("timetable_history", []).append({
                 "version":     len(sess.get("timetable_history", [])) + 1,
                 "timetable":   copy.deepcopy(existing),
-                "constraints": copy.deepcopy(sess["constraints"]),
+                "constraints": copy.deepcopy(merged),
                 "timestamp":   datetime.now().isoformat(),
             })
         sess["timetable"]   = result["timetable"]
@@ -587,29 +570,35 @@ TOOLS = [
 ]
 
 _SYSTEM = SystemMessage(content="""\
-You are SLOT AI, a school timetable assistant powered by Google OR-Tools CP-SAT.
+You are SLOT AI, a school timetable assistant powered by Google OR-Tools CP-SAT solver.
 
-You are the orchestrator only. You NEVER write timetable data, tables, schedules, or cell \
-assignments yourself — even if the user explicitly asks you to "generate" or "output" one. \
-The mathematical solver produces the timetable; your job is to call the right tools and \
-relay the results clearly.
+You are the orchestrator. You NEVER output timetable data yourself.
+The solver generates the timetable; you call tools and relay results.
 
-Tool usage:
-- extract_constraints: call whenever user provides subjects, professors, rooms, slots, days, \
-  or any scheduling rule
-- solve_timetable: call immediately after extracting constraints when the user wants a timetable
-- edit_timetable: call when user asks for changes to an existing timetable
-- validate_timetable: call when user asks to verify correctness
-- get_timetable_history: call when user asks about previous versions
-- compare_timetables: call to diff two versions (use 0 for current)
+HOW TO CALL extract_constraints:
+You must read the user's message and populate every argument yourself from the text.
+- teachers: strip Dr./Prof. titles. Map each professor to their subjects.
+  "AI-Vaibhav, ML-Vaibhav, DSA-Simha" -> {"Vaibhav": ["AI","ML"], "Simha": ["DSA"]}
+  Parallel lists "Subjects: A,B Professors: X,Y" -> positional match -> {"X":["A"],"Y":["B"]}
+- rooms: list of room names exactly as written.
+- slots: list of time slot strings exactly as written (exclude break times).
+- days: list of day names.
+- room_restrictions: {"Subject": ["ForbiddenRoom"]}. "CN not in Room D" -> {"CN":["D"]}
+- slot_restrictions: {"Subject": ["allowed","slots"]}. "AI/ML only morning 09:00-10:40" ->
+  {"AI": ["09:00-09:50","09:50-10:40"], "ML": ["09:00-09:50","09:50-10:40"]}
+- professor_unavailability: {"Prof": ["Day"]}
+- max_slots_per_day: {"Prof": N}
+- custom_rules: other rules as strings.
+
+HOW TO CALL edit_timetable:
+Pass only the constraints that changed. Set clear_fixed_assignments=True for swaps.
 
 Workflow:
-1. Full info in one message -> call extract_constraints then solve_timetable
-2. Incomplete info -> call extract_constraints then ask what is missing
-3. User wants a change -> call edit_timetable
-4. After a successful solve: confirm it worked and state OPTIMAL or FEASIBLE. \
-   The UI already shows the timetable — do not reproduce it as text.
-5. INFEASIBLE: explain which constraints are likely conflicting.\
+1. User gives full info -> call extract_constraints (populate all args), then solve_timetable
+2. Info incomplete -> call extract_constraints with what you have, tell user what is missing
+3. User wants a change -> call edit_timetable with only the changed constraints
+4. After successful solve: confirm status (OPTIMAL/FEASIBLE). UI shows the timetable automatically.
+5. INFEASIBLE: diagnose which constraints conflict.\
 """)
 
 class AgentState(TypedDict):
