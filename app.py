@@ -923,58 +923,63 @@ with st.sidebar:
 </div>
 """, unsafe_allow_html=True)
 
-    # Iframe JS: injects persistent CSS for span-marker gaps + hides rn/dl via MutationObserver.
-    # getTid uses bounding-rect comparison — robust regardless of DOM nesting depth.
+    # Iframe JS — fixes two issues:
+    # 1. Gap: inject display:none CSS for span-marker wrappers (removes from flex layout entirely)
+    # 2. rn/dl hiding + getTid: walk up to stVerticalBlock-level to handle stVerticalBlockBorderWrapper
     st.components.v1.html("""
 <script>
 (function(){
   var P=window.parent, PD=P.document;
   var _ctxTid=null;
 
-  // Inject a persistent <style> into parent <head> once — CSS handles the gap,
-  // which is more resilient than inline styles that Streamlit's React can override.
+  // Inject once into <head> — display:none removes span-marker wrappers from flex layout entirely,
+  // eliminating the gap that height:0 left behind due to the stVerticalBlock flex gap.
   if(!PD.getElementById('sai-style')){
     var s=PD.createElement('style');
     s.id='sai-style';
     s.textContent=
-      '[data-testid="element-container"]:has(span[id^="sai-sw-"]){'+
-      'height:0!important;min-height:0!important;'+
-      'overflow:hidden!important;margin:0!important;padding:0!important;}';
+      '[data-testid="stVerticalBlockBorderWrapper"]:has(span[id^="sai-sw-"]),' +
+      '[data-testid="element-container"]:has(span[id^="sai-sw-"]){display:none!important;}';
     (PD.head||PD.documentElement).appendChild(s);
   }
 
-  // Hide rn/dl column containers (MutationObserver re-runs after every Streamlit rerender)
+  // Return the direct child of stVerticalBlock that contains el.
+  // Streamlit wraps sidebar items in stVerticalBlockBorderWrapper > element-container,
+  // so we must walk up to that level for correct sibling navigation and hiding.
+  function topChild(el){
+    var cur=el;
+    while(cur&&cur.parentElement){
+      var pt=cur.parentElement.getAttribute?cur.parentElement.getAttribute('data-testid'):'';
+      if(pt==='stVerticalBlock'||pt==='stSidebarUserContent') return cur;
+      cur=cur.parentElement;
+    }
+    return null;
+  }
+
+  // Hide rn/dl containers by hiding their stVerticalBlock-level wrapper
   function cleanup(){
     var btns=PD.querySelectorAll('button');
     for(var i=0;i<btns.length;i++){
       var t=btns[i].textContent.trim();
       if(t.startsWith('rn​')||t.startsWith('dl​')){
-        var hb=btns[i].closest('[data-testid="stHorizontalBlock"]');
-        if(hb){
-          var par=hb.parentElement;
-          var wrap=(par&&par.getAttribute('data-testid')==='element-container')?par:hb;
-          if(wrap.style.display!=='none') wrap.style.display='none';
-        } else {
-          var ec=btns[i].closest('[data-testid="element-container"]');
-          if(ec&&ec.style.display!=='none') ec.style.display='none';
-        }
+        var tc=topChild(btns[i]);
+        if(tc&&tc.style.display!=='none') tc.style.display='none';
       }
     }
   }
 
-  // Find tid by bounding-rect: pick the sai-sw-* span closest above the right-clicked button
+  // Find tid: walk up to stVerticalBlock-level, then scan previous siblings for sai-sw-* span.
+  // Works even when span markers are display:none — querySelector still finds them.
   function getTid(btn){
-    var br=btn.getBoundingClientRect();
-    var spans=PD.querySelectorAll('span[id^="sai-sw-"]');
-    var best=null,bestDist=Infinity;
-    for(var i=0;i<spans.length;i++){
-      var sr=spans[i].getBoundingClientRect();
-      if(sr.top<=br.top+5){
-        var d=br.top-sr.top;
-        if(d<bestDist){bestDist=d;best=spans[i].id.slice(7);}
-      }
+    var tc=topChild(btn);
+    if(!tc) return null;
+    var prev=tc.previousElementSibling;
+    for(var i=0;i<4&&prev;i++){
+      var sw=prev.querySelector('span[id^="sai-sw-"]');
+      if(sw) return sw.id.slice(7);
+      prev=prev.previousElementSibling;
     }
-    return best;
+    return null;
   }
 
   function clickHiddenBtn(prefix,tid){
@@ -994,8 +999,9 @@ with st.sidebar:
   P._saiCtxH=function(e){
     var menu=PD.getElementById('sai-ctx-menu');
     if(!menu) return;
+    // Only trigger for buttons inside the sidebar
     var btn=e.target&&e.target.closest?e.target.closest('button'):null;
-    if(!btn){menu.style.display='none';return;}
+    if(!btn||!btn.closest('[data-testid="stSidebar"]')){menu.style.display='none';return;}
     var t=btn.textContent.trim();
     if(t.startsWith('rn​')||t.startsWith('dl​')||
        t==='Save'||t==='Cancel'){menu.style.display='none';return;}
