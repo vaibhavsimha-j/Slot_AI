@@ -815,8 +815,32 @@ def _export_excel():
             df.to_excel(w, sheet_name=day[:31])
     return buf.getvalue()
 
+# ── Context-menu action handler (right-click → query params → rerun) ─────────────
+_ctx        = st.query_params.get("ctx_action", "")
+_ctx_tid    = st.query_params.get("ctx_tid",    "")
+_ctx_title  = st.query_params.get("ctx_title",  "")
+if _ctx:
+    st.query_params.clear()
+    if _ctx == "switch" and _ctx_tid:
+        if _ctx_tid != st.session_state.active_thread_id:
+            _save_current_chat()
+            _load_chat(_ctx_tid)
+    elif _ctx == "rename" and _ctx_tid:
+        st.session_state.renaming_chat_tid = _ctx_tid
+    elif _ctx == "save_rename" and _ctx_tid:
+        for _s_ in st.session_state.chat_sessions:
+            if _s_["thread_id"] == _ctx_tid:
+                _s_["title"] = _ctx_title.strip() or _s_["title"]
+                break
+        st.session_state.renaming_chat_tid = None
+    elif _ctx == "cancel_rename":
+        st.session_state.renaming_chat_tid = None
+    elif _ctx == "delete" and _ctx_tid:
+        _delete_chat(_ctx_tid)
+    st.rerun()
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────────
-st.title("📅 SLOT AI")
+st.title("🤖 SLOT AI")
 
 # Inject CSS: remove red/orange from buttons; keep everything dark-theme neutral
 st.markdown("""
@@ -846,49 +870,6 @@ section[data-testid="stSidebar"] [data-testid="stTextInput"] [data-baseweb="base
     padding-right: 0 !important;
 }
 
-/* ── Chat list rows: fuse name button + dots into one visual block ── */
-section[data-testid="stSidebar"] div.chat-row [data-testid="stHorizontalBlock"] {
-    gap: 0 !important;
-}
-section[data-testid="stSidebar"] div.chat-row [data-testid="column"]:first-child button {
-    border-top-right-radius: 0 !important;
-    border-bottom-right-radius: 0 !important;
-    border-right: none !important;
-}
-section[data-testid="stSidebar"] div.chat-row [data-testid="column"]:last-child button {
-    border-top-left-radius: 0 !important;
-    border-bottom-left-radius: 0 !important;
-    border-left: 1px solid rgba(255,255,255,0.08) !important;
-    padding: 0 8px !important;
-    min-width: 32px !important;
-    max-width: 32px !important;
-    font-size: 13px !important;
-    letter-spacing: 1px !important;
-    color: rgba(255,255,255,0.45) !important;
-}
-
-/* ── Hide the popover chevron arrow ── */
-section[data-testid="stSidebar"] [data-testid="stPopover"] button svg,
-section[data-testid="stSidebar"] [data-testid="stPopover"] button [data-testid="chevron-down"] {
-    display: none !important;
-}
-
-/* ── Popover menu items: small, compact ── */
-[data-testid="stPopoverBody"] button {
-    font-size: 13px !important;
-    padding: 4px 12px !important;
-    height: auto !important;
-    min-height: 0 !important;
-    background: transparent !important;
-    border: none !important;
-    color: rgba(255,255,255,0.85) !important;
-    border-radius: 4px !important;
-    width: 100% !important;
-    text-align: left !important;
-}
-[data-testid="stPopoverBody"] button:hover {
-    background: rgba(255,255,255,0.1) !important;
-}
 </style>
 """, unsafe_allow_html=True)
 
@@ -909,46 +890,135 @@ with st.sidebar:
 
     st.caption("Chats")
 
-    # ── Chat list ──
-    for sess in st.session_state.chat_sessions:
-        is_active = sess["thread_id"] == st.session_state.active_thread_id
-
-        if st.session_state.renaming_chat_tid == sess["thread_id"]:
-            # Inline rename — stacked (no columns) so column-fusion CSS doesn't apply
-            new_name = st.text_input(
-                "Rename", value=sess["title"],
-                key=f"rename_input_{sess['thread_id']}",
-                label_visibility="collapsed",
+    # ── Chat list (custom HTML — right-click for Rename / Delete) ──
+    _active_tid    = st.session_state.active_thread_id
+    _renaming_tid  = st.session_state.renaming_chat_tid or ""
+    _chat_items    = ""
+    for _sess in st.session_state.chat_sessions:
+        _tid  = _sess["thread_id"]
+        _safe = (_sess["title"]
+                 .replace("&", "&amp;").replace("<", "&lt;")
+                 .replace(">", "&gt;").replace('"', "&quot;"))
+        if _renaming_tid == _tid:
+            _chat_items += (
+                f'<div class="sai-rename-row">'
+                f'<input id="sai-ri-{_tid}" class="sai-rename-input" type="text" value="{_safe}">'
+                f'<div class="sai-rename-actions">'
+                f'<button onclick="saiSaveRename(\'{_tid}\')">Save</button>'
+                f'<button onclick="saiNav({{ctx_action:\'cancel_rename\'}})">Cancel</button>'
+                f'</div></div>'
             )
-            if st.button("Save", key=f"rename_save_{sess['thread_id']}", use_container_width=True):
-                sess["title"] = new_name.strip() or sess["title"]
-                st.session_state.renaming_chat_tid = None
-                st.rerun()
-            if st.button("Cancel", key=f"rename_cancel_{sess['thread_id']}", use_container_width=True):
-                st.session_state.renaming_chat_tid = None
-                st.rerun()
         else:
-            label = ("› " if is_active else "") + sess["title"]
-            # Wrap in a div.chat-row so the fusion CSS targets only these rows
-            st.markdown('<div class="chat-row">', unsafe_allow_html=True)
-            name_col, menu_col = st.columns([5, 1])
-            if name_col.button(
-                label,
-                key=f"chat_{sess['thread_id']}",
-                use_container_width=True,
-                type="primary" if is_active else "secondary",
-            ):
-                _save_current_chat()
-                _load_chat(sess["thread_id"])
-                st.rerun()
-            with menu_col.popover("•••", use_container_width=True):
-                if st.button("Rename", key=f"rename_btn_{sess['thread_id']}"):
-                    st.session_state.renaming_chat_tid = sess["thread_id"]
-                    st.rerun()
-                if st.button("Delete", key=f"delete_btn_{sess['thread_id']}"):
-                    _delete_chat(sess["thread_id"])
-                    st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
+            _ac  = " sai-active" if _tid == _active_tid else ""
+            _arr = "› " if _tid == _active_tid else ""
+            _chat_items += (
+                f'<button class="sai-chat-btn{_ac}" data-tid="{_tid}" '
+                f'onclick="saiSwitch(\'{_tid}\')">{_arr}{_safe}</button>'
+            )
+    st.markdown(f"""
+<div id="sai-chat-list">{_chat_items}</div>
+<div id="sai-ctx-menu">
+  <button id="sai-ctx-rename-btn">Rename</button>
+  <button id="sai-ctx-delete-btn">Delete</button>
+</div>
+<script>
+(function(){{
+  window.saiNav = function(p) {{
+    var u = new URL(window.location.href);
+    Object.keys(p).forEach(function(k){{ u.searchParams.set(k, p[k]); }});
+    window.location.href = u.toString();
+  }};
+  window.saiSwitch = function(tid) {{ saiNav({{ctx_action:'switch',ctx_tid:tid}}); }};
+  window.saiSaveRename = function(tid) {{
+    var el = document.getElementById('sai-ri-'+tid);
+    saiNav({{ctx_action:'save_rename',ctx_tid:tid,ctx_title:el?el.value:''}});
+  }};
+
+  var _ctxTid = null;
+
+  if (window._saiCtxH) document.removeEventListener('contextmenu', window._saiCtxH);
+  window._saiCtxH = function(e) {{
+    var btn = e.target && e.target.closest ? e.target.closest('.sai-chat-btn') : null;
+    var menu = document.getElementById('sai-ctx-menu');
+    if (!menu) return;
+    if (!btn) {{ menu.style.display='none'; return; }}
+    e.preventDefault();
+    _ctxTid = btn.getAttribute('data-tid');
+    menu.style.left = e.clientX+'px';
+    menu.style.top  = e.clientY+'px';
+    menu.style.display = 'block';
+  }};
+  document.addEventListener('contextmenu', window._saiCtxH);
+
+  if (window._saiClickH) document.removeEventListener('click', window._saiClickH);
+  window._saiClickH = function(e) {{
+    var menu = document.getElementById('sai-ctx-menu');
+    if (!menu) return;
+    if (e.target && e.target.id === 'sai-ctx-rename-btn') {{
+      e.stopPropagation(); menu.style.display='none';
+      if (_ctxTid) saiNav({{ctx_action:'rename',ctx_tid:_ctxTid}});
+      return;
+    }}
+    if (e.target && e.target.id === 'sai-ctx-delete-btn') {{
+      e.stopPropagation(); menu.style.display='none';
+      if (_ctxTid) saiNav({{ctx_action:'delete',ctx_tid:_ctxTid}});
+      return;
+    }}
+    menu.style.display='none';
+  }};
+  document.addEventListener('click', window._saiClickH);
+}})();
+</script>
+<style>
+#sai-chat-list {{ margin-bottom:2px; }}
+.sai-chat-btn {{
+  display:block !important; width:100% !important; text-align:left !important;
+  padding:7px 12px !important; margin-bottom:3px !important;
+  background:rgba(255,255,255,0.06) !important; color:rgba(255,255,255,0.88) !important;
+  border:1px solid rgba(255,255,255,0.12) !important; border-radius:6px !important;
+  font-size:14px !important; cursor:pointer !important;
+  white-space:nowrap !important; overflow:hidden !important; text-overflow:ellipsis !important;
+  font-family:inherit !important; box-sizing:border-box !important;
+}}
+.sai-chat-btn:hover {{
+  background:rgba(255,255,255,0.13) !important;
+  border-color:rgba(255,255,255,0.28) !important;
+}}
+.sai-active {{
+  background:rgba(255,255,255,0.16) !important;
+  border-color:rgba(255,255,255,0.35) !important; font-weight:600 !important;
+}}
+.sai-rename-row {{ margin-bottom:3px; }}
+.sai-rename-input {{
+  width:100%; padding:6px 10px; box-sizing:border-box; margin-bottom:4px;
+  background:rgba(255,255,255,0.08); color:rgba(255,255,255,0.9);
+  border:1px solid rgba(255,255,255,0.25); border-radius:6px;
+  font-size:14px; font-family:inherit; outline:none;
+}}
+.sai-rename-actions {{ display:flex; gap:4px; }}
+.sai-rename-actions button {{
+  flex:1; padding:4px 0; font-size:12px; font-family:inherit;
+  border:1px solid rgba(255,255,255,0.2) !important; border-radius:4px !important;
+  background:rgba(255,255,255,0.07) !important; color:rgba(255,255,255,0.8) !important;
+  cursor:pointer !important;
+}}
+.sai-rename-actions button:hover {{ background:rgba(255,255,255,0.15) !important; }}
+#sai-ctx-menu {{
+  display:none; position:fixed; z-index:99999;
+  background:rgb(22,22,26); border:1px solid rgba(255,255,255,0.18);
+  border-radius:6px; padding:3px; min-width:110px;
+  box-shadow:0 4px 16px rgba(0,0,0,0.7);
+}}
+#sai-ctx-menu button {{
+  display:block !important; width:100% !important; text-align:left !important;
+  padding:5px 10px !important; background:transparent !important;
+  border:none !important; color:rgba(255,255,255,0.82) !important;
+  font-size:12px !important; cursor:pointer !important;
+  border-radius:4px !important; font-family:inherit;
+}}
+#sai-ctx-menu button:hover {{ background:rgba(255,255,255,0.1) !important; }}
+</style>
+""", unsafe_allow_html=True)
 
     st.divider()
 
@@ -989,8 +1059,6 @@ if st.session_state.page == "timetable":
     st.stop()
 
 # ── Page: Chat ───────────────────────────────────────────────────────────────────
-st.subheader("💬 Chat with SLOT AI")
-
 if st.session_state.timetable:
     st.success("Timetable ready — click **📊 View Timetable** in the sidebar to see it.")
 
