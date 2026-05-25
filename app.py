@@ -815,30 +815,6 @@ def _export_excel():
             df.to_excel(w, sheet_name=day[:31])
     return buf.getvalue()
 
-# ── Context-menu action handler (right-click → query params → rerun) ─────────────
-_ctx        = st.query_params.get("ctx_action", "")
-_ctx_tid    = st.query_params.get("ctx_tid",    "")
-_ctx_title  = st.query_params.get("ctx_title",  "")
-if _ctx:
-    st.query_params.clear()
-    if _ctx == "switch" and _ctx_tid:
-        if _ctx_tid != st.session_state.active_thread_id:
-            _save_current_chat()
-            _load_chat(_ctx_tid)
-    elif _ctx == "rename" and _ctx_tid:
-        st.session_state.renaming_chat_tid = _ctx_tid
-    elif _ctx == "save_rename" and _ctx_tid:
-        for _s_ in st.session_state.chat_sessions:
-            if _s_["thread_id"] == _ctx_tid:
-                _s_["title"] = _ctx_title.strip() or _s_["title"]
-                break
-        st.session_state.renaming_chat_tid = None
-    elif _ctx == "cancel_rename":
-        st.session_state.renaming_chat_tid = None
-    elif _ctx == "delete" and _ctx_tid:
-        _delete_chat(_ctx_tid)
-    st.rerun()
-
 # ── Sidebar ───────────────────────────────────────────────────────────────────────
 st.title("🤖 SLOT AI")
 
@@ -890,113 +866,115 @@ with st.sidebar:
 
     st.caption("Chats")
 
-    # ── Chat list (custom HTML — right-click for Rename / Delete) ──
-    _active_tid   = st.session_state.active_thread_id
-    _renaming_tid = st.session_state.renaming_chat_tid or ""
-    _chat_items   = ""
-    for _sess in st.session_state.chat_sessions:
-        _tid  = _sess["thread_id"]
-        _safe = (_sess["title"]
-                 .replace("&", "&amp;").replace("<", "&lt;")
-                 .replace(">", "&gt;").replace('"', "&quot;"))
-        if _renaming_tid == _tid:
-            # Save: anchor tag whose href is built by onclick before navigation fires.
-            # Anchor-tag navigation is intercepted by Streamlit's React Router as a soft
-            # rerun — unlike window.location.href which triggers a hard reload + lost state.
-            _save_onclick = (
-                f"var e=document.getElementById('sai-ri-{_tid}');"
-                f"this.href='?ctx_action=save_rename&ctx_tid={_tid}&ctx_title='"
-                f"+encodeURIComponent(e?e.value:'');"
-                f"return true;"
-            )
-            _chat_items += (
-                f'<div class="sai-rename-row">'
-                f'<input id="sai-ri-{_tid}" class="sai-rename-input" type="text" value="{_safe}">'
-                f'<div class="sai-rename-actions">'
-                f'<a href="#" class="sai-rename-save" onclick="{_save_onclick}">Save</a>'
-                f'<a href="?ctx_action=cancel_rename" class="sai-rename-cancel">Cancel</a>'
-                f'</div></div>'
-            )
-        else:
-            _ac  = " sai-active" if _tid == _active_tid else ""
-            _arr = "› " if _tid == _active_tid else ""
-            # Anchor tag — Streamlit's React Router intercepts <a href> clicks as soft
-            # reruns, preserving session state. window.location.href causes a hard reload.
-            _chat_items += (
-                f'<a href="?ctx_action=switch&ctx_tid={_tid}" '
-                f'class="sai-chat-btn{_ac}" data-tid="{_tid}">'
-                f'{_arr}{_safe}</a>'
-            )
+    # ── Chat list — fully native Streamlit widgets (WebSocket-based, no browser navigation) ──
+    # Hide action button containers via CSS :has() — they stay in DOM for .click() calls
+    _hb_css = "".join(
+        f'div[data-testid="stVerticalBlock"] div[data-testid="element-container"]:has(> div > span#sai-hm-{s["thread_id"]})'
+        f' ~ div[data-testid="element-container"] {{height:0!important;overflow:hidden!important;'
+        f'margin:0!important;padding:0!important;min-height:0!important;opacity:0!important;}}'
+        for s in st.session_state.chat_sessions
+    )
+    st.markdown(f'<style>{_hb_css}</style>', unsafe_allow_html=True)
 
-    # HTML: chat buttons + hidden context-menu div + CSS (no <script> — Streamlit strips those)
-    st.markdown(f"""
-<div id="sai-chat-list">{_chat_items}</div>
+    for _sess in st.session_state.chat_sessions:
+        _tid = _sess["thread_id"]
+        _is_active = _tid == st.session_state.active_thread_id
+
+        if st.session_state.renaming_chat_tid == _tid:
+            _new_name = st.text_input(
+                "", value=_sess["title"],
+                key=f"_rni_{_tid}", label_visibility="collapsed"
+            )
+            _c1, _c2 = st.columns(2)
+            if _c1.button("Save", key=f"_rns_{_tid}", use_container_width=True):
+                _sess["title"] = _new_name.strip() or _sess["title"]
+                st.session_state.renaming_chat_tid = None
+                st.rerun()
+            if _c2.button("Cancel", key=f"_rnc_{_tid}", use_container_width=True):
+                st.session_state.renaming_chat_tid = None
+                st.rerun()
+        else:
+            _label = ("› " if _is_active else "") + _sess["title"] + "​" + _tid
+            if st.button(_label, key=f"_sw_{_tid}", use_container_width=True,
+                         type="primary" if _is_active else "secondary"):
+                _save_current_chat()
+                _load_chat(_tid)
+                st.rerun()
+            # Anchor marker so CSS :has() can target the hidden buttons that follow
+            st.markdown(f'<span id="sai-hm-{_tid}"></span>', unsafe_allow_html=True)
+            # Hidden action buttons — programmatically .click()-ed by iframe JS
+            _crn, _cdl = st.columns(2)
+            if _crn.button(f"rn​{_tid}", key=f"_rn_{_tid}", use_container_width=True):
+                st.session_state.renaming_chat_tid = _tid
+                st.rerun()
+            if _cdl.button(f"dl​{_tid}", key=f"_dl_{_tid}", use_container_width=True):
+                _delete_chat(_tid)
+                st.rerun()
+
+    # Context menu — plain display div, no hrefs, no onclick navigation
+    st.markdown("""
 <div id="sai-ctx-menu" style="display:none;position:fixed;z-index:99999;
   background:rgb(22,22,26);border:1px solid rgba(255,255,255,0.18);
   border-radius:6px;padding:3px;min-width:110px;box-shadow:0 4px 16px rgba(0,0,0,0.7);">
-  <a href="#" id="sai-ctx-rename-btn" class="sai-ctx-item">Rename</a>
-  <a href="#" id="sai-ctx-delete-btn" class="sai-ctx-item">Delete</a>
+  <button type="button" id="sai-ctx-rename-btn"
+    style="display:block;width:100%;text-align:left;padding:5px 10px;
+    background:transparent;border:none;color:rgba(255,255,255,0.82);
+    font-size:12px;cursor:pointer;border-radius:4px;font-family:inherit;">Rename</button>
+  <button type="button" id="sai-ctx-delete-btn"
+    style="display:block;width:100%;text-align:left;padding:5px 10px;
+    background:transparent;border:none;color:rgba(255,255,255,0.82);
+    font-size:12px;cursor:pointer;border-radius:4px;font-family:inherit;">Delete</button>
 </div>
-<style>
-#sai-chat-list{{margin-bottom:2px;}}
-.sai-chat-btn{{display:block!important;width:100%!important;text-align:left!important;
-  padding:7px 12px!important;margin-bottom:3px!important;
-  background:rgba(255,255,255,0.06)!important;color:rgba(255,255,255,0.88)!important;
-  border:1px solid rgba(255,255,255,0.12)!important;border-radius:6px!important;
-  font-size:14px!important;cursor:pointer!important;
-  white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;
-  font-family:inherit!important;box-sizing:border-box!important;
-  text-decoration:none!important;}}
-.sai-chat-btn:hover{{background:rgba(255,255,255,0.13)!important;
-  border-color:rgba(255,255,255,0.28)!important;}}
-.sai-active{{background:rgba(255,255,255,0.16)!important;
-  border-color:rgba(255,255,255,0.35)!important;font-weight:600!important;}}
-.sai-rename-row{{margin-bottom:3px;}}
-.sai-rename-input{{width:100%;padding:6px 10px;box-sizing:border-box;margin-bottom:4px;
-  background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.9);
-  border:1px solid rgba(255,255,255,0.25);border-radius:6px;
-  font-size:14px;font-family:inherit;outline:none;}}
-.sai-rename-actions{{display:flex;gap:4px;align-items:center;}}
-.sai-rename-save,.sai-rename-cancel{{
-  flex:1;padding:4px 0;font-size:12px;font-family:inherit;text-align:center;
-  border:1px solid rgba(255,255,255,0.2)!important;border-radius:4px!important;
-  background:rgba(255,255,255,0.07)!important;color:rgba(255,255,255,0.8)!important;
-  cursor:pointer!important;text-decoration:none!important;display:block!important;}}
-.sai-rename-save:hover,.sai-rename-cancel:hover{{background:rgba(255,255,255,0.15)!important;}}
-.sai-ctx-item{{display:block!important;padding:5px 10px!important;
-  color:rgba(255,255,255,0.82)!important;font-size:12px!important;
-  text-decoration:none!important;border-radius:4px!important;font-family:inherit;}}
-.sai-ctx-item:hover{{background:rgba(255,255,255,0.1)!important;}}
-</style>
 """, unsafe_allow_html=True)
 
-    # JavaScript for right-click context menu — runs in iframe so it can use addEventListener
-    # on the parent document without Streamlit stripping the <script> tag.
+    # Iframe JS: intercepts right-click on native chat buttons, shows menu,
+    # then .click()-s the hidden native action buttons (WebSocket — no navigation).
     st.components.v1.html("""
 <script>
 (function(){
   var P=window.parent, PD=P.document;
+  var _ctxTid=null;
+
+  function clickHiddenBtn(prefix, tid) {
+    var target=prefix+'​'+tid;
+    var btns=PD.querySelectorAll('button');
+    for(var i=0;i<btns.length;i++){
+      if(btns[i].textContent.trim()===target){btns[i].click();return;}
+    }
+  }
+
   if(P._saiCtxH) PD.removeEventListener('contextmenu',P._saiCtxH);
   P._saiCtxH=function(e){
-    var btn=e.target&&e.target.closest?e.target.closest('.sai-chat-btn'):null;
     var menu=PD.getElementById('sai-ctx-menu');
-    if(!menu)return;
-    if(!btn){menu.style.display='none';return;}
+    if(!menu) return;
+    var btn=e.target&&e.target.closest?e.target.closest('button'):null;
+    if(!btn||btn.textContent.indexOf('​')===-1||
+       btn.textContent.trim().startsWith('rn​')||
+       btn.textContent.trim().startsWith('dl​')){
+      menu.style.display='none'; return;
+    }
     e.preventDefault();
-    var tid=btn.getAttribute('data-tid');
-    var rb=PD.getElementById('sai-ctx-rename-btn');
-    var db=PD.getElementById('sai-ctx-delete-btn');
-    if(rb)rb.href='?ctx_action=rename&ctx_tid='+encodeURIComponent(tid);
-    if(db)db.href='?ctx_action=delete&ctx_tid='+encodeURIComponent(tid);
+    var parts=btn.textContent.split('​');
+    _ctxTid=parts[parts.length-1];
     menu.style.left=e.clientX+'px';
     menu.style.top=e.clientY+'px';
     menu.style.display='block';
   };
   PD.addEventListener('contextmenu',P._saiCtxH);
+
   if(P._saiClickH) PD.removeEventListener('click',P._saiClickH);
   P._saiClickH=function(e){
     var menu=PD.getElementById('sai-ctx-menu');
-    if(menu&&!e.target.closest('#sai-ctx-menu'))menu.style.display='none';
+    if(!menu) return;
+    if(e.target&&e.target.id==='sai-ctx-rename-btn'){
+      e.stopPropagation(); menu.style.display='none';
+      if(_ctxTid) clickHiddenBtn('rn',_ctxTid); return;
+    }
+    if(e.target&&e.target.id==='sai-ctx-delete-btn'){
+      e.stopPropagation(); menu.style.display='none';
+      if(_ctxTid) clickHiddenBtn('dl',_ctxTid); return;
+    }
+    if(!e.target.closest('#sai-ctx-menu')) menu.style.display='none';
   };
   PD.addEventListener('click',P._saiClickH);
 })();
