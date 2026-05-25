@@ -2,7 +2,7 @@
 pip install streamlit langchain-groq langgraph langchain-core ortools pydantic pandas openpyxl fpdf2
 streamlit run app.py
 """
-import os, json, copy, uuid, contextvars
+import os, json, copy, uuid, threading
 from datetime import datetime
 from typing import Annotated, Any, Dict, List, Optional, TypedDict
 import streamlit as st
@@ -36,14 +36,17 @@ if not st.session_state.api_key and os.getenv("GROQ_API_KEY"):
 if "memory" not in st.session_state:
     st.session_state.memory = MemorySaver()
 
-# ── Thread-safe session store (tools run in async context, can't use st.session_state) ──
-# ContextVar holds the current session ID; _STORE holds per-session state dicts.
-_SESSION_ID: contextvars.ContextVar[str] = contextvars.ContextVar("session_id", default="")
-_STORE: dict[str, dict] = {}
+# ── Session store — tools cannot access st.session_state, so we use a thread-local
+# to carry the active session id into tool calls (LangGraph invoke is synchronous,
+# so the tool always runs on the same OS thread as the Streamlit script).
+_tl    = threading.local()          # carries session_id for the current thread
+_STORE: dict[str, dict] = {}        # per-session state dicts, keyed by thread_id
 
 def _s() -> dict:
-    """Return the current session's state dict (safe from any async/thread context)."""
-    sid = _SESSION_ID.get()
+    """Return the mutable state dict for the current session."""
+    sid = getattr(_tl, "session_id", "")
+    if not sid or sid not in _STORE:
+        sid = "_default"
     return _STORE.setdefault(sid, {
         "api_key": "", "model": MODELS[0],
         "constraints": {}, "timetable": {}, "timetable_history": [], "tt_updated": False,
@@ -771,9 +774,11 @@ if prompt := st.chat_input("Describe your timetable — professors, rooms, slots
     # Inject API key into env so ChatGroq finds it regardless of async context
     os.environ["GROQ_API_KEY"] = st.session_state.api_key
 
-    # Sync session_state → thread-safe store before entering async agent context
+    # Point the thread-local session id at this session's store dict.
+    # LangGraph invoke() is synchronous — tools run on the same OS thread,
+    # so _tl.session_id is visible inside every tool call without any context copying.
     tid = st.session_state.thread_id
-    _SESSION_ID.set(tid)
+    _tl.session_id = tid
     _STORE[tid] = {
         "api_key":           st.session_state.api_key,
         "model":             st.session_state.model,
@@ -787,10 +792,7 @@ if prompt := st.chat_input("Describe your timetable — professors, rooms, slots
         with st.spinner("Thinking…"):
             try:
                 config = {"configurable": {"thread_id": tid}}
-                # copy_context() propagates the ContextVar into LangGraph's async tasks
-                ctx    = contextvars.copy_context()
-                result = ctx.run(
-                    st.session_state.agent.invoke,
+                result = st.session_state.agent.invoke(
                     {"messages": [HumanMessage(content=prompt)]},
                     config,
                 )
@@ -808,14 +810,8 @@ if prompt := st.chat_input("Describe your timetable — professors, rooms, slots
                 else:
                     reply = f"⚠️ Error ({type(e).__name__}): {err[:300]}"
 
-        # Sync tool-updated state back to session_state.
-        # Fallback: if ContextVar lost the tid inside tool execution, data lands in _STORE[""]
+        # Sync tool-updated state back into session_state
         sess = _STORE.get(tid, {})
-        if not sess.get("timetable") and not sess.get("tt_updated"):
-            fb = _STORE.get("", {})
-            if fb.get("timetable") or fb.get("tt_updated"):
-                sess = fb
-
         st.session_state.constraints       = sess.get("constraints",       st.session_state.constraints)
         st.session_state.timetable         = sess.get("timetable",         st.session_state.timetable)
         st.session_state.timetable_history = sess.get("timetable_history", st.session_state.timetable_history)
