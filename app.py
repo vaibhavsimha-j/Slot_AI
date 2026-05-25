@@ -29,8 +29,9 @@ _DEFAULTS = dict(
     display_messages=[], tt_updated=False,
     thread_id=str(uuid.uuid4()),
     page="chat",
-    chat_sessions=[],   # [{thread_id, title, display_messages, constraints, timetable, timetable_history}]
+    chat_sessions=[],
     active_thread_id="",
+    renaming_chat_tid=None,
 )
 for k, v in _DEFAULTS.items():
     st.session_state.setdefault(k, v)
@@ -783,6 +784,27 @@ def _export_excel():
 # ── Sidebar ───────────────────────────────────────────────────────────────────────
 st.title("📅 SLOT AI")
 
+# Inject CSS: remove red/orange from buttons; keep everything dark-theme neutral
+st.markdown("""
+<style>
+section[data-testid="stSidebar"] button {
+    background-color: rgba(255,255,255,0.06) !important;
+    color: rgba(255,255,255,0.88) !important;
+    border: 1px solid rgba(255,255,255,0.12) !important;
+    border-radius: 6px !important;
+}
+section[data-testid="stSidebar"] button:hover {
+    background-color: rgba(255,255,255,0.13) !important;
+    border-color: rgba(255,255,255,0.28) !important;
+}
+section[data-testid="stSidebar"] button[kind="primary"] {
+    background-color: rgba(255,255,255,0.16) !important;
+    border-color: rgba(255,255,255,0.35) !important;
+    font-weight: 600 !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 with st.sidebar:
     # ── Credentials ──
     st.header("🔑 Credentials")
@@ -794,7 +816,7 @@ with st.sidebar:
     st.divider()
 
     # ── New Chat ──
-    if st.button("✏️ New Chat", use_container_width=True, type="primary"):
+    if st.button("New Chat +", use_container_width=True, type="secondary"):
         _new_chat()
         st.rerun()
 
@@ -803,19 +825,42 @@ with st.sidebar:
     # ── Chat list ──
     for sess in st.session_state.chat_sessions:
         is_active = sess["thread_id"] == st.session_state.active_thread_id
-        name_col, del_col = st.columns([5, 1])
-        if name_col.button(
-            sess["title"],
-            key=f"chat_{sess['thread_id']}",
-            use_container_width=True,
-            type="primary" if is_active else "secondary",
-        ):
-            _save_current_chat()
-            _load_chat(sess["thread_id"])
-            st.rerun()
-        if del_col.button("✕", key=f"del_{sess['thread_id']}", use_container_width=True):
-            _delete_chat(sess["thread_id"])
-            st.rerun()
+
+        if st.session_state.renaming_chat_tid == sess["thread_id"]:
+            # Inline rename input
+            new_name = st.text_input(
+                "Rename", value=sess["title"],
+                key=f"rename_input_{sess['thread_id']}",
+                label_visibility="collapsed",
+            )
+            s_col, c_col = st.columns(2)
+            if s_col.button("Save", key=f"rename_save_{sess['thread_id']}", use_container_width=True):
+                sess["title"] = new_name.strip() or sess["title"]
+                st.session_state.renaming_chat_tid = None
+                st.rerun()
+            if c_col.button("Cancel", key=f"rename_cancel_{sess['thread_id']}", use_container_width=True):
+                st.session_state.renaming_chat_tid = None
+                st.rerun()
+        else:
+            label = ("› " if is_active else "") + sess["title"]
+            name_col, menu_col = st.columns([5, 1])
+            if name_col.button(
+                label,
+                key=f"chat_{sess['thread_id']}",
+                use_container_width=True,
+                type="primary" if is_active else "secondary",
+            ):
+                _save_current_chat()
+                _load_chat(sess["thread_id"])
+                st.rerun()
+            with menu_col.popover("···", use_container_width=True):
+                if st.button("Rename", key=f"rename_btn_{sess['thread_id']}", use_container_width=True):
+                    st.session_state.renaming_chat_tid = sess["thread_id"]
+                    st.rerun()
+                st.divider()
+                if st.button("Delete", key=f"delete_btn_{sess['thread_id']}", use_container_width=True):
+                    _delete_chat(sess["thread_id"])
+                    st.rerun()
 
     st.divider()
 
