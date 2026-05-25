@@ -216,11 +216,13 @@ def _ortools_solve(constraints: dict) -> dict:
                     for s in range(n_s) for r in range(n_r) for sid in ids) <= max_s
             )
 
-    # Every subject must appear at least once per day across all rooms
-    # This prevents the solver from ignoring subjects entirely
+    # Every subject must appear at least once per week across all days/rooms.
+    # Per-day would conflict with professor unavailability (e.g. Vaibhav blocked Wednesday
+    # → AI/ML can't appear that day, making per-day minimum impossible).
     for sub in range(n_sub):
-        for d in range(n_d):
-            model.Add(sum(x[d, s, r, sub] for s in range(n_s) for r in range(n_r)) >= 1)
+        model.Add(
+            sum(x[d, s, r, sub] for d in range(n_d) for s in range(n_s) for r in range(n_r)) >= 1
+        )
 
     # Fixed assignments: pin specific cells
     for fa in constraints.get("fixed_assignments", []):
