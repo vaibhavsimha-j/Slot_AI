@@ -909,8 +909,12 @@ with st.sidebar:
     # ── Hidden text input: JS writes "rn:tid" or "dl:tid" via React setter ──
     # CSS hides its container; input[placeholder] attribute makes it findable by JS.
     st.markdown("""<style>
-div[data-testid="element-container"]:has(input[placeholder="__sai__"]) {display:none!important;}
-div[data-testid="stVerticalBlockBorderWrapper"]:has(input[placeholder="__sai__"]) {display:none!important;}
+/* Hide the hidden action input — target by placeholder attribute on the input itself */
+input[placeholder="__sai__"] { display:none!important; }
+/* Hide its stTextInput wrapper and element-container to remove all spacing */
+div[data-testid="stTextInput"]:has(input[placeholder="__sai__"]) { display:none!important; }
+div[data-testid="element-container"]:has(input[placeholder="__sai__"]) { display:none!important; }
+div[data-testid="stVerticalBlockBorderWrapper"]:has(input[placeholder="__sai__"]) { display:none!important; }
 </style>""", unsafe_allow_html=True)
     st.text_input("", key="_sai_pending", placeholder="__sai__",
                   label_visibility="collapsed")
@@ -940,7 +944,7 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(input[placeholder="__sai__"]
 <script>
 (function(){{
   var P=window.parent, PD=P.document;
-  var SAI_TIDS={_json_mod.dumps(_sai_tids)};
+  var SAI_TIDS={json.dumps(_sai_tids)};
   var _ctxTid=null;
 
   // React native setter trick: bypasses React's synthetic event tracking,
