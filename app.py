@@ -343,9 +343,8 @@ def extract_constraints(
     sess["constraints"] = merged
     miss = _missing(merged)
     return json.dumps({
-        "status":      "ready" if not miss else "incomplete",
-        "missing":     miss,
-        "constraints": merged,
+        "status":  "ready" if not miss else "incomplete",
+        "missing": miss,
         "summary": {
             "professors": list(merged.get("teachers", {}).keys()),
             "subjects":   [s for ss in merged.get("teachers", {}).values() for s in ss],
@@ -389,7 +388,6 @@ def solve_timetable() -> str:
         return json.dumps({
             "status":        "success",
             "solver_status": result["solver_status"],
-            "timetable":     result["timetable"],
             "days":          list(result["timetable"].keys()),
             "total_cells":   (
                 len(c.get("slots", [])) *
@@ -457,8 +455,7 @@ def edit_timetable(
         return json.dumps({
             "status":        "success",
             "solver_status": result["solver_status"],
-            "timetable":     result["timetable"],
-            "constraints":   merged,
+            "days":          list(result["timetable"].keys()),
             "message":       "Timetable updated successfully.",
         })
 
@@ -816,39 +813,30 @@ if prompt := st.chat_input("Describe your timetable — professors, rooms, slots
                 else:
                     reply = f"⚠️ Error ({type(e).__name__}): {err[:300]}"
 
-        # Parse tool results directly from the LangGraph message chain.
-        # This works on all platforms (Streamlit Cloud, local) because it reads
-        # from the agent's return value — no thread-local or ContextVar needed.
-        if result:
-            for msg in result.get("messages", []):
-                raw = getattr(msg, "content", "")
-                if not isinstance(raw, str):
-                    continue
-                try:
-                    data = json.loads(raw)
-                except (json.JSONDecodeError, ValueError):
-                    continue
-
-                # extract_constraints returns "constraints"
-                if "constraints" in data and isinstance(data["constraints"], dict):
-                    st.session_state.constraints = data["constraints"]
-
-                # solve_timetable / edit_timetable return "timetable" on success
-                if (data.get("status") == "success"
-                        and "timetable" in data
-                        and isinstance(data["timetable"], dict)
-                        and data["timetable"]):
-                    st.session_state.timetable  = data["timetable"]
-                    st.session_state.tt_updated = True
-
-                # show_timetable returns show_timetable: true
-                if data.get("show_timetable") and st.session_state.timetable:
-                    st.session_state.tt_updated = True
-
-        # Also sync history from _STORE (only written inside tools, not in return value)
+        # Sync state from _STORE — tools write timetable/constraints there directly.
+        # Timetable/constraints are NOT echoed back in tool return values (keeps
+        # message history small and avoids Groq rate limits from token accumulation).
         sess = _STORE.get(tid, _STORE.get("_default", {}))
+        if sess.get("constraints"):
+            st.session_state.constraints = sess["constraints"]
+        if sess.get("timetable"):
+            st.session_state.timetable  = sess["timetable"]
+        if sess.get("tt_updated"):
+            st.session_state.tt_updated = True
         if sess.get("timetable_history"):
             st.session_state.timetable_history = sess["timetable_history"]
+
+        # show_timetable sets tt_updated in _STORE; also check message flag as fallback
+        if result and not st.session_state.tt_updated:
+            for msg in result.get("messages", []):
+                raw = getattr(msg, "content", "")
+                if isinstance(raw, str):
+                    try:
+                        data = json.loads(raw)
+                        if data.get("show_timetable") and st.session_state.timetable:
+                            st.session_state.tt_updated = True
+                    except (json.JSONDecodeError, ValueError):
+                        pass
 
         st.markdown(reply)
 
