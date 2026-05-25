@@ -867,15 +867,6 @@ with st.sidebar:
     st.caption("Chats")
 
     # ── Chat list — fully native Streamlit widgets (WebSocket-based, no browser navigation) ──
-    # Hide action button containers via CSS :has() — they stay in DOM for .click() calls
-    _hb_css = "".join(
-        f'div[data-testid="stVerticalBlock"] div[data-testid="element-container"]:has(> div > span#sai-hm-{s["thread_id"]})'
-        f' ~ div[data-testid="element-container"] {{height:0!important;overflow:hidden!important;'
-        f'margin:0!important;padding:0!important;min-height:0!important;opacity:0!important;}}'
-        for s in st.session_state.chat_sessions
-    )
-    st.markdown(f'<style>{_hb_css}</style>', unsafe_allow_html=True)
-
     for _sess in st.session_state.chat_sessions:
         _tid = _sess["thread_id"]
         _is_active = _tid == st.session_state.active_thread_id
@@ -894,15 +885,17 @@ with st.sidebar:
                 st.session_state.renaming_chat_tid = None
                 st.rerun()
         else:
-            _label = ("› " if _is_active else "") + _sess["title"] + "​" + _tid
+            # Invisible span marker — JS reads id to get tid on right-click
+            st.markdown(f'<span id="sai-sw-{_tid}"></span>', unsafe_allow_html=True)
+            # Visible chat button — clean label, no UUID
+            _label = ("› " if _is_active else "") + _sess["title"]
             if st.button(_label, key=f"_sw_{_tid}", use_container_width=True,
                          type="primary" if _is_active else "secondary"):
                 _save_current_chat()
                 _load_chat(_tid)
                 st.rerun()
-            # Anchor marker so CSS :has() can target the hidden buttons that follow
-            st.markdown(f'<span id="sai-hm-{_tid}"></span>', unsafe_allow_html=True)
-            # Hidden action buttons — programmatically .click()-ed by iframe JS
+            # Hidden action buttons — JS hides their container via MutationObserver,
+            # but .click() still works on hidden DOM nodes (WebSocket, no navigation)
             _crn, _cdl = st.columns(2)
             if _crn.button(f"rn​{_tid}", key=f"_rn_{_tid}", use_container_width=True):
                 st.session_state.renaming_chat_tid = _tid
@@ -927,15 +920,57 @@ with st.sidebar:
 </div>
 """, unsafe_allow_html=True)
 
-    # Iframe JS: intercepts right-click on native chat buttons, shows menu,
-    # then .click()-s the hidden native action buttons (WebSocket — no navigation).
+    # Iframe JS: hides rn/dl buttons via MutationObserver, handles right-click context menu.
+    # Tid is extracted from the sai-sw-{tid} span that precedes each chat button.
     st.components.v1.html("""
 <script>
 (function(){
   var P=window.parent, PD=P.document;
   var _ctxTid=null;
 
-  function clickHiddenBtn(prefix, tid) {
+  // Hide the container of any button whose label starts with rn​ or dl​.
+  // We hide the stHorizontalBlock (columns wrapper) so both buttons disappear together.
+  function hideActionButtons(){
+    var btns=PD.querySelectorAll('button');
+    for(var i=0;i<btns.length;i++){
+      var t=btns[i].textContent.trim();
+      if(t.startsWith('rn​')||t.startsWith('dl​')){
+        // Walk up to find the stHorizontalBlock or nearest element-container not inside a column
+        var el=btns[i];
+        while(el&&el.parentElement){
+          if(el.getAttribute&&el.getAttribute('data-testid')==='stHorizontalBlock'){
+            if(el.style.display!=='none') el.style.display='none';
+            break;
+          }
+          // Fallback: element-container whose parent is NOT a column
+          if(el.getAttribute&&el.getAttribute('data-testid')==='element-container'){
+            var par=el.parentElement;
+            var parTest=par&&par.getAttribute&&par.getAttribute('data-testid');
+            if(parTest&&parTest!=='column'){
+              if(el.style.display!=='none') el.style.display='none';
+              break;
+            }
+          }
+          el=el.parentElement;
+        }
+      }
+    }
+  }
+
+  // Extract tid from the sai-sw-{tid} span that Streamlit renders just before each chat button.
+  function getTid(btn){
+    var ec=btn.closest('[data-testid="element-container"]');
+    if(!ec) return null;
+    var prev=ec.previousElementSibling;
+    for(var i=0;i<4&&prev;i++){
+      var sw=prev.querySelector('span[id^="sai-sw-"]');
+      if(sw) return sw.id.slice(7); // strip "sai-sw-"
+      prev=prev.previousElementSibling;
+    }
+    return null;
+  }
+
+  function clickHiddenBtn(prefix,tid){
     var target=prefix+'​'+tid;
     var btns=PD.querySelectorAll('button');
     for(var i=0;i<btns.length;i++){
@@ -943,19 +978,26 @@ with st.sidebar:
     }
   }
 
+  // Run once now and re-run on every DOM mutation (covers Streamlit reruns)
+  hideActionButtons();
+  if(P._saiObs) P._saiObs.disconnect();
+  P._saiObs=new MutationObserver(hideActionButtons);
+  P._saiObs.observe(PD.body,{childList:true,subtree:true});
+
   if(P._saiCtxH) PD.removeEventListener('contextmenu',P._saiCtxH);
   P._saiCtxH=function(e){
     var menu=PD.getElementById('sai-ctx-menu');
     if(!menu) return;
     var btn=e.target&&e.target.closest?e.target.closest('button'):null;
-    if(!btn||btn.textContent.indexOf('​')===-1||
-       btn.textContent.trim().startsWith('rn​')||
-       btn.textContent.trim().startsWith('dl​')){
-      menu.style.display='none'; return;
-    }
+    if(!btn){menu.style.display='none';return;}
+    var t=btn.textContent.trim();
+    // Ignore hidden action buttons, Save, Cancel, New Chat, View Timetable
+    if(t.startsWith('rn​')||t.startsWith('dl​')||
+       t==='Save'||t==='Cancel'){menu.style.display='none';return;}
+    var tid=getTid(btn);
+    if(!tid){menu.style.display='none';return;}
     e.preventDefault();
-    var parts=btn.textContent.split('​');
-    _ctxTid=parts[parts.length-1];
+    _ctxTid=tid;
     menu.style.left=e.clientX+'px';
     menu.style.top=e.clientY+'px';
     menu.style.display='block';
@@ -967,12 +1009,12 @@ with st.sidebar:
     var menu=PD.getElementById('sai-ctx-menu');
     if(!menu) return;
     if(e.target&&e.target.id==='sai-ctx-rename-btn'){
-      e.stopPropagation(); menu.style.display='none';
-      if(_ctxTid) clickHiddenBtn('rn',_ctxTid); return;
+      e.stopPropagation();menu.style.display='none';
+      if(_ctxTid) clickHiddenBtn('rn',_ctxTid);return;
     }
     if(e.target&&e.target.id==='sai-ctx-delete-btn'){
-      e.stopPropagation(); menu.style.display='none';
-      if(_ctxTid) clickHiddenBtn('dl',_ctxTid); return;
+      e.stopPropagation();menu.style.display='none';
+      if(_ctxTid) clickHiddenBtn('dl',_ctxTid);return;
     }
     if(!e.target.closest('#sai-ctx-menu')) menu.style.display='none';
   };
