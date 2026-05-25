@@ -531,12 +531,25 @@ def compare_timetables(version_a: int, version_b: int) -> str:
     })
 
 
+@tool
+def show_timetable() -> str:
+    """Display the current timetable in the UI.
+    Call whenever the user asks to see, show, view, or display the timetable."""
+    sess = _s()
+    tt = sess.get("timetable", {})
+    if not tt:
+        return json.dumps({"status": "empty", "message": "No timetable has been generated yet. Please provide scheduling details first."})
+    sess["tt_updated"] = True
+    return json.dumps({"status": "ok", "message": "Timetable is now displayed in the UI."})
+
+
 # ── LangGraph Agent ──────────────────────────────────────────────────────────────
 TOOLS = [
     extract_constraints,
     solve_timetable,
     edit_timetable,
     validate_timetable,
+    show_timetable,
     get_timetable_history,
     compare_timetables,
 ]
@@ -570,7 +583,8 @@ Workflow:
 2. Info incomplete -> call extract_constraints with what you have, tell user what is missing
 3. User wants a change -> call edit_timetable with only the changed constraints
 4. After successful solve: confirm status (OPTIMAL/FEASIBLE). UI shows the timetable automatically.
-5. INFEASIBLE: diagnose which constraints conflict.\
+5. INFEASIBLE: diagnose which constraints conflict.
+6. User asks to see/show/display/view the timetable -> call show_timetable immediately.\
 """)
 
 class AgentState(TypedDict):
