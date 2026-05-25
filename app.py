@@ -891,134 +891,112 @@ with st.sidebar:
     st.caption("Chats")
 
     # ── Chat list (custom HTML — right-click for Rename / Delete) ──
-    _active_tid    = st.session_state.active_thread_id
-    _renaming_tid  = st.session_state.renaming_chat_tid or ""
-    _chat_items    = ""
+    _active_tid   = st.session_state.active_thread_id
+    _renaming_tid = st.session_state.renaming_chat_tid or ""
+    _chat_items   = ""
     for _sess in st.session_state.chat_sessions:
         _tid  = _sess["thread_id"]
         _safe = (_sess["title"]
                  .replace("&", "&amp;").replace("<", "&lt;")
                  .replace(">", "&gt;").replace('"', "&quot;"))
         if _renaming_tid == _tid:
+            # Inline rename — Save uses onclick JS (reads input value), Cancel is a plain link
+            _save_js = (
+                f"var e=document.getElementById('sai-ri-{_tid}');"
+                f"window.location.href='?ctx_action=save_rename&ctx_tid={_tid}&ctx_title='+encodeURIComponent(e?e.value:'');"
+                f"return false;"
+            )
             _chat_items += (
                 f'<div class="sai-rename-row">'
                 f'<input id="sai-ri-{_tid}" class="sai-rename-input" type="text" value="{_safe}">'
                 f'<div class="sai-rename-actions">'
-                f'<button onclick="saiSaveRename(\'{_tid}\')">Save</button>'
-                f'<button onclick="saiNav({{ctx_action:\'cancel_rename\'}})">Cancel</button>'
+                f'<button onclick="{_save_js}">Save</button>'
+                f'<a href="?ctx_action=cancel_rename" class="sai-rename-cancel">Cancel</a>'
                 f'</div></div>'
             )
         else:
             _ac  = " sai-active" if _tid == _active_tid else ""
             _arr = "› " if _tid == _active_tid else ""
+            # onclick does plain URL navigation — no external JS function needed
             _chat_items += (
                 f'<button class="sai-chat-btn{_ac}" data-tid="{_tid}" '
-                f'onclick="saiSwitch(\'{_tid}\')">{_arr}{_safe}</button>'
+                f'onclick="window.location.href=\'?ctx_action=switch&ctx_tid={_tid}\'">'
+                f'{_arr}{_safe}</button>'
             )
+
+    # HTML: chat buttons + hidden context-menu div + CSS (no <script> — Streamlit strips those)
     st.markdown(f"""
 <div id="sai-chat-list">{_chat_items}</div>
-<div id="sai-ctx-menu">
-  <button id="sai-ctx-rename-btn">Rename</button>
-  <button id="sai-ctx-delete-btn">Delete</button>
+<div id="sai-ctx-menu" style="display:none;position:fixed;z-index:99999;
+  background:rgb(22,22,26);border:1px solid rgba(255,255,255,0.18);
+  border-radius:6px;padding:3px;min-width:110px;box-shadow:0 4px 16px rgba(0,0,0,0.7);">
+  <a href="#" id="sai-ctx-rename-btn" class="sai-ctx-item">Rename</a>
+  <a href="#" id="sai-ctx-delete-btn" class="sai-ctx-item">Delete</a>
 </div>
-<script>
-(function(){{
-  window.saiNav = function(p) {{
-    var u = new URL(window.location.href);
-    Object.keys(p).forEach(function(k){{ u.searchParams.set(k, p[k]); }});
-    window.location.href = u.toString();
-  }};
-  window.saiSwitch = function(tid) {{ saiNav({{ctx_action:'switch',ctx_tid:tid}}); }};
-  window.saiSaveRename = function(tid) {{
-    var el = document.getElementById('sai-ri-'+tid);
-    saiNav({{ctx_action:'save_rename',ctx_tid:tid,ctx_title:el?el.value:''}});
-  }};
-
-  var _ctxTid = null;
-
-  if (window._saiCtxH) document.removeEventListener('contextmenu', window._saiCtxH);
-  window._saiCtxH = function(e) {{
-    var btn = e.target && e.target.closest ? e.target.closest('.sai-chat-btn') : null;
-    var menu = document.getElementById('sai-ctx-menu');
-    if (!menu) return;
-    if (!btn) {{ menu.style.display='none'; return; }}
-    e.preventDefault();
-    _ctxTid = btn.getAttribute('data-tid');
-    menu.style.left = e.clientX+'px';
-    menu.style.top  = e.clientY+'px';
-    menu.style.display = 'block';
-  }};
-  document.addEventListener('contextmenu', window._saiCtxH);
-
-  if (window._saiClickH) document.removeEventListener('click', window._saiClickH);
-  window._saiClickH = function(e) {{
-    var menu = document.getElementById('sai-ctx-menu');
-    if (!menu) return;
-    if (e.target && e.target.id === 'sai-ctx-rename-btn') {{
-      e.stopPropagation(); menu.style.display='none';
-      if (_ctxTid) saiNav({{ctx_action:'rename',ctx_tid:_ctxTid}});
-      return;
-    }}
-    if (e.target && e.target.id === 'sai-ctx-delete-btn') {{
-      e.stopPropagation(); menu.style.display='none';
-      if (_ctxTid) saiNav({{ctx_action:'delete',ctx_tid:_ctxTid}});
-      return;
-    }}
-    menu.style.display='none';
-  }};
-  document.addEventListener('click', window._saiClickH);
-}})();
-</script>
 <style>
-#sai-chat-list {{ margin-bottom:2px; }}
-.sai-chat-btn {{
-  display:block !important; width:100% !important; text-align:left !important;
-  padding:7px 12px !important; margin-bottom:3px !important;
-  background:rgba(255,255,255,0.06) !important; color:rgba(255,255,255,0.88) !important;
-  border:1px solid rgba(255,255,255,0.12) !important; border-radius:6px !important;
-  font-size:14px !important; cursor:pointer !important;
-  white-space:nowrap !important; overflow:hidden !important; text-overflow:ellipsis !important;
-  font-family:inherit !important; box-sizing:border-box !important;
-}}
-.sai-chat-btn:hover {{
-  background:rgba(255,255,255,0.13) !important;
-  border-color:rgba(255,255,255,0.28) !important;
-}}
-.sai-active {{
-  background:rgba(255,255,255,0.16) !important;
-  border-color:rgba(255,255,255,0.35) !important; font-weight:600 !important;
-}}
-.sai-rename-row {{ margin-bottom:3px; }}
-.sai-rename-input {{
-  width:100%; padding:6px 10px; box-sizing:border-box; margin-bottom:4px;
-  background:rgba(255,255,255,0.08); color:rgba(255,255,255,0.9);
-  border:1px solid rgba(255,255,255,0.25); border-radius:6px;
-  font-size:14px; font-family:inherit; outline:none;
-}}
-.sai-rename-actions {{ display:flex; gap:4px; }}
-.sai-rename-actions button {{
-  flex:1; padding:4px 0; font-size:12px; font-family:inherit;
-  border:1px solid rgba(255,255,255,0.2) !important; border-radius:4px !important;
-  background:rgba(255,255,255,0.07) !important; color:rgba(255,255,255,0.8) !important;
-  cursor:pointer !important;
-}}
-.sai-rename-actions button:hover {{ background:rgba(255,255,255,0.15) !important; }}
-#sai-ctx-menu {{
-  display:none; position:fixed; z-index:99999;
-  background:rgb(22,22,26); border:1px solid rgba(255,255,255,0.18);
-  border-radius:6px; padding:3px; min-width:110px;
-  box-shadow:0 4px 16px rgba(0,0,0,0.7);
-}}
-#sai-ctx-menu button {{
-  display:block !important; width:100% !important; text-align:left !important;
-  padding:5px 10px !important; background:transparent !important;
-  border:none !important; color:rgba(255,255,255,0.82) !important;
-  font-size:12px !important; cursor:pointer !important;
-  border-radius:4px !important; font-family:inherit;
-}}
-#sai-ctx-menu button:hover {{ background:rgba(255,255,255,0.1) !important; }}
+#sai-chat-list{{margin-bottom:2px;}}
+.sai-chat-btn{{display:block!important;width:100%!important;text-align:left!important;
+  padding:7px 12px!important;margin-bottom:3px!important;
+  background:rgba(255,255,255,0.06)!important;color:rgba(255,255,255,0.88)!important;
+  border:1px solid rgba(255,255,255,0.12)!important;border-radius:6px!important;
+  font-size:14px!important;cursor:pointer!important;
+  white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;
+  font-family:inherit!important;box-sizing:border-box!important;}}
+.sai-chat-btn:hover{{background:rgba(255,255,255,0.13)!important;
+  border-color:rgba(255,255,255,0.28)!important;}}
+.sai-active{{background:rgba(255,255,255,0.16)!important;
+  border-color:rgba(255,255,255,0.35)!important;font-weight:600!important;}}
+.sai-rename-row{{margin-bottom:3px;}}
+.sai-rename-input{{width:100%;padding:6px 10px;box-sizing:border-box;margin-bottom:4px;
+  background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.9);
+  border:1px solid rgba(255,255,255,0.25);border-radius:6px;
+  font-size:14px;font-family:inherit;outline:none;}}
+.sai-rename-actions{{display:flex;gap:4px;align-items:center;}}
+.sai-rename-actions button,.sai-rename-cancel{{
+  flex:1;padding:4px 0;font-size:12px;font-family:inherit;text-align:center;
+  border:1px solid rgba(255,255,255,0.2)!important;border-radius:4px!important;
+  background:rgba(255,255,255,0.07)!important;color:rgba(255,255,255,0.8)!important;
+  cursor:pointer!important;text-decoration:none!important;display:block!important;}}
+.sai-rename-actions button:hover,.sai-rename-cancel:hover{{background:rgba(255,255,255,0.15)!important;}}
+.sai-ctx-item{{display:block!important;padding:5px 10px!important;
+  color:rgba(255,255,255,0.82)!important;font-size:12px!important;
+  text-decoration:none!important;border-radius:4px!important;font-family:inherit;}}
+.sai-ctx-item:hover{{background:rgba(255,255,255,0.1)!important;}}
 </style>
 """, unsafe_allow_html=True)
+
+    # JavaScript for right-click context menu — runs in iframe so it can use addEventListener
+    # on the parent document without Streamlit stripping the <script> tag.
+    st.components.v1.html("""
+<script>
+(function(){
+  var P=window.parent, PD=P.document;
+  if(P._saiCtxH) PD.removeEventListener('contextmenu',P._saiCtxH);
+  P._saiCtxH=function(e){
+    var btn=e.target&&e.target.closest?e.target.closest('.sai-chat-btn'):null;
+    var menu=PD.getElementById('sai-ctx-menu');
+    if(!menu)return;
+    if(!btn){menu.style.display='none';return;}
+    e.preventDefault();
+    var tid=btn.getAttribute('data-tid');
+    var rb=PD.getElementById('sai-ctx-rename-btn');
+    var db=PD.getElementById('sai-ctx-delete-btn');
+    if(rb)rb.href='?ctx_action=rename&ctx_tid='+encodeURIComponent(tid);
+    if(db)db.href='?ctx_action=delete&ctx_tid='+encodeURIComponent(tid);
+    menu.style.left=e.clientX+'px';
+    menu.style.top=e.clientY+'px';
+    menu.style.display='block';
+  };
+  PD.addEventListener('contextmenu',P._saiCtxH);
+  if(P._saiClickH) PD.removeEventListener('click',P._saiClickH);
+  P._saiClickH=function(e){
+    var menu=PD.getElementById('sai-ctx-menu');
+    if(menu&&!e.target.closest('#sai-ctx-menu'))menu.style.display='none';
+  };
+  PD.addEventListener('click',P._saiClickH);
+})();
+</script>
+""", height=0)
 
     st.divider()
 
