@@ -302,9 +302,7 @@ Keys are entered via the sidebar and are **never stored** — they exist only wi
 
 ## 👨‍💻 Author
 
-**Vaibhav Simha J**
-
-🔗 https://www.linkedin.com/in/vaibhav-simha-j-0b46b5327/ 
+**[Vaibhav Simha J](https://www.linkedin.com/in/vaibhav-simha-j-0b46b5327/)**
 
 📧 vaibhavsimhajworks@gmail.com
 
@@ -312,7 +310,7 @@ Keys are entered via the sidebar and are **never stored** — they exist only wi
 
 ## 📄 License
 
-This project was developed by Vaibhav Simha J. Feel free to explore, learn from, and build upon this work with appropriate attribution.
+This project was developed by [Vaibhav Simha J](https://www.linkedin.com/in/vaibhav-simha-j-0b46b5327/). Feel free to explore, learn from, and build upon this work with appropriate attribution.
 
 ---
 
