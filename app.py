@@ -19,7 +19,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from ortools.sat.python import cp_model
 
 # ── Config ──────────────────────────────────────────────────────────────────────
-MODEL = "llama3-groq-70b-8192-tool-use-preview"
+MODEL = "llama-3.3-70b-versatile"
 st.set_page_config(page_title="SLOT AI", page_icon="📅", layout="wide")
 
 # ── Session Init ────────────────────────────────────────────────────────────────
