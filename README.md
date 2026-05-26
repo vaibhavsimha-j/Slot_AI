@@ -1,5 +1,7 @@
 # 📅 SLOT AI — Scheduling Agent
 
+[![Try Slot AI](https://img.shields.io/badge/Try%20Slot%20AI-Live%20App-brightgreen?style=for-the-badge&logo=streamlit)](https://slotai.streamlit.app)
+
 > Ask anything about scheduling. Get a formally constraint-satisfying schedule — or a smart conversational plan — instantly.
 
 An intelligent scheduling assistant that combines a conversational LLM with a **Google OR-Tools CP-SAT constraint solver** inside a clean Streamlit chat interface. It automatically decides whether to generate a plan using its own intelligence or to formally solve it as a constraint satisfaction problem — based on whether the user has provided all the details or wants the AI to figure them out.
