@@ -156,8 +156,9 @@ def _get_llm(t: float = 0.0) -> ChatGroq:
 
 def _cell(e):
     if isinstance(e, dict):
-        s = e.get("subject", "")
-        return f"{s} ({e.get('professor', '')})" if s not in ("FREE", "", None) else "—"
+        t = e.get("task") or e.get("subject", "")
+        a = e.get("assignee") or e.get("professor", "")
+        return f"{t} ({a})" if t not in ("FREE", "", None) else "—"
     return str(e).strip() or "—"
 
 def _to_dfs(tt: dict) -> dict:
@@ -226,105 +227,115 @@ def _show_tt(tt: dict, key_prefix: str = "tt"):
         st.dataframe(df, use_container_width=True)
 
 def _missing(c: dict) -> list:
-    return [m for k, m in [
-        ("teachers", "professor→subject mapping"),
-        ("slots",    "time slots"),
-        ("rooms",    "room names"),
-        ("days",     "working days"),
-    ] if not c.get(k)]
+    def _has(new_k, old_k=None):
+        return bool(c.get(new_k) or (old_k and c.get(old_k)))
+    out = []
+    if not _has("assignees", "teachers"):  out.append("assignees (who/what is being scheduled)")
+    if not _has("time_slots", "slots"):    out.append("time slots")
+    if not _has("locations", "rooms"):     out.append("locations")
+    if not _has("periods", "days"):        out.append("periods / days")
+    return out
 
 # ── OR-Tools CP-SAT Solver ──────────────────────────────────────────────────────
 def _ortools_solve(constraints: dict) -> dict:
-    teachers  = constraints.get("teachers", {})
-    rooms     = constraints.get("rooms", [])
-    slots     = constraints.get("slots", [])
-    days      = constraints.get("days", [])
+    # Support both new generic names and legacy school-specific names
+    assignees  = constraints.get("assignees")  or constraints.get("teachers", {})
+    locations  = constraints.get("locations")  or constraints.get("rooms", [])
+    time_slots = constraints.get("time_slots") or constraints.get("slots", [])
+    periods    = constraints.get("periods")    or constraints.get("days", [])
 
-    sp       = {s: p for p, ss in teachers.items() for s in ss}
-    subjects = list(sp.keys())
-    n_d, n_s, n_r, n_sub = len(days), len(slots), len(rooms), len(subjects)
+    task_to_assignee = {t: a for a, ts in assignees.items() for t in ts}
+    tasks = list(task_to_assignee.keys())
+    n_p, n_ts, n_l, n_t = len(periods), len(time_slots), len(locations), len(tasks)
 
-    if not all([n_d, n_s, n_r, n_sub]):
-        return {"status": "error", "reason": "Missing core constraints (teachers/rooms/slots/days)."}
+    if not all([n_p, n_ts, n_l, n_t]):
+        return {"status": "error", "reason": "Missing core fields: assignees, locations, time_slots, periods."}
 
     model = cp_model.CpModel()
     x = {
-        (d, s, r, sub): model.NewBoolVar(f"x{d}{s}{r}{sub}")
-        for d in range(n_d) for s in range(n_s)
-        for r in range(n_r) for sub in range(n_sub)
+        (p, ts, l, t): model.NewBoolVar(f"x{p}{ts}{l}{t}")
+        for p in range(n_p) for ts in range(n_ts)
+        for l in range(n_l) for t in range(n_t)
     }
 
-    # Each room has exactly one subject per slot
-    for d in range(n_d):
-        for s in range(n_s):
-            for r in range(n_r):
-                model.AddExactlyOne(x[d, s, r, sub] for sub in range(n_sub))
+    # Each location has exactly one task per time_slot per period
+    for p in range(n_p):
+        for ts in range(n_ts):
+            for l in range(n_l):
+                model.AddExactlyOne(x[p, ts, l, t] for t in range(n_t))
 
-    # No professor double-booked in the same slot
-    for d in range(n_d):
-        for s in range(n_s):
-            for prof, psubjs in teachers.items():
-                ids = [subjects.index(sub) for sub in psubjs if sub in subjects]
+    # No assignee double-booked in the same time_slot
+    for p in range(n_p):
+        for ts in range(n_ts):
+            for asgn, asgn_tasks in assignees.items():
+                ids = [tasks.index(t) for t in asgn_tasks if t in tasks]
                 if ids:
                     model.Add(
-                        sum(x[d, s, r, sid] for r in range(n_r) for sid in ids) <= 1
+                        sum(x[p, ts, l, tid] for l in range(n_l) for tid in ids) <= 1
                     )
 
-    # Professor unavailability
-    for prof, unavail_days in constraints.get("professor_unavailability", {}).items():
-        ids = [subjects.index(s) for s in teachers.get(prof, []) if s in subjects]
-        for d, day in enumerate(days):
-            if day in unavail_days:
-                for s in range(n_s):
-                    for r in range(n_r):
-                        for sid in ids:
-                            model.Add(x[d, s, r, sid] == 0)
+    # Assignee unavailability (new key + legacy key)
+    unavail = {**constraints.get("professor_unavailability", {}),
+               **constraints.get("assignee_unavailability", {})}
+    for asgn, unavail_periods in unavail.items():
+        ids = [tasks.index(t) for t in assignees.get(asgn, []) if t in tasks]
+        for p, period in enumerate(periods):
+            if period in unavail_periods:
+                for ts in range(n_ts):
+                    for l in range(n_l):
+                        for tid in ids:
+                            model.Add(x[p, ts, l, tid] == 0)
 
-    # Room restrictions: subject forbidden from certain rooms
-    for subj, forbidden in constraints.get("room_restrictions", {}).items():
-        if subj in subjects:
-            sid = subjects.index(subj)
-            for r, room in enumerate(rooms):
-                if room in forbidden:
-                    for d in range(n_d):
-                        for s in range(n_s):
-                            model.Add(x[d, s, r, sid] == 0)
+    # Location restrictions (new key + legacy key)
+    loc_restr = {**constraints.get("room_restrictions", {}),
+                 **constraints.get("location_restrictions", {})}
+    for task, forbidden in loc_restr.items():
+        if task in tasks:
+            tid = tasks.index(task)
+            for l, loc in enumerate(locations):
+                if loc in forbidden:
+                    for p in range(n_p):
+                        for ts in range(n_ts):
+                            model.Add(x[p, ts, l, tid] == 0)
 
-    # Slot restrictions: subject allowed only in certain slots
-    for subj, allowed in constraints.get("slot_restrictions", {}).items():
-        if subj in subjects:
-            sid = subjects.index(subj)
-            for s, slot in enumerate(slots):
+    # Time-slot restrictions (new key + legacy key)
+    ts_restr = {**constraints.get("slot_restrictions", {}),
+                **constraints.get("time_slot_restrictions", {})}
+    for task, allowed in ts_restr.items():
+        if task in tasks:
+            tid = tasks.index(task)
+            for ts, slot in enumerate(time_slots):
                 if slot not in allowed:
-                    for d in range(n_d):
-                        for r in range(n_r):
-                            model.Add(x[d, s, r, sid] == 0)
+                    for p in range(n_p):
+                        for l in range(n_l):
+                            model.Add(x[p, ts, l, tid] == 0)
 
-    # Max slots per day per professor
-    for prof, max_s in constraints.get("max_slots_per_day", {}).items():
-        ids = [subjects.index(s) for s in teachers.get(prof, []) if s in subjects]
-        for d in range(n_d):
+    # Max tasks per period per assignee (new key + legacy key)
+    max_pp = {**constraints.get("max_slots_per_day", {}),
+              **constraints.get("max_per_period", {})}
+    for asgn, max_v in max_pp.items():
+        ids = [tasks.index(t) for t in assignees.get(asgn, []) if t in tasks]
+        for p in range(n_p):
             model.Add(
-                sum(x[d, s, r, sid]
-                    for s in range(n_s) for r in range(n_r) for sid in ids) <= max_s
+                sum(x[p, ts, l, tid]
+                    for ts in range(n_ts) for l in range(n_l) for tid in ids) <= max_v
             )
 
-    # Every subject must appear at least once per week across all days/rooms.
-    # Per-day would conflict with professor unavailability (e.g. Vaibhav blocked Wednesday
-    # → AI/ML can't appear that day, making per-day minimum impossible).
-    for sub in range(n_sub):
+    # Every task must appear at least once across all periods
+    for t in range(n_t):
         model.Add(
-            sum(x[d, s, r, sub] for d in range(n_d) for s in range(n_s) for r in range(n_r)) >= 1
+            sum(x[p, ts, l, t]
+                for p in range(n_p) for ts in range(n_ts) for l in range(n_l)) >= 1
         )
 
-    # Fixed assignments: pin specific cells
+    # Fixed assignments
     for fa in constraints.get("fixed_assignments", []):
         try:
-            d = days.index(fa["day"])
-            s = slots.index(fa["slot"])
-            r = rooms.index(fa["room"])
-            sid = subjects.index(fa["subject"])
-            model.Add(x[d, s, r, sid] == 1)
+            p   = periods.index(fa.get("period") or fa.get("day"))
+            ts  = time_slots.index(fa.get("time_slot") or fa.get("slot"))
+            l   = locations.index(fa.get("location") or fa.get("room"))
+            tid = tasks.index(fa.get("task") or fa.get("subject"))
+            model.Add(x[p, ts, l, tid] == 1)
         except (ValueError, KeyError):
             pass
 
@@ -335,16 +346,16 @@ def _ortools_solve(constraints: dict) -> dict:
 
     if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         tt = {}
-        for d, day in enumerate(days):
-            tt[day] = {}
-            for s, slot in enumerate(slots):
-                tt[day][slot] = {}
-                for r, room in enumerate(rooms):
-                    for sid, subject in enumerate(subjects):
-                        if solver.Value(x[d, s, r, sid]) == 1:
-                            tt[day][slot][room] = {
-                                "subject": subject,
-                                "professor": sp[subject],
+        for p, period in enumerate(periods):
+            tt[period] = {}
+            for ts, slot in enumerate(time_slots):
+                tt[period][slot] = {}
+                for l, loc in enumerate(locations):
+                    for tid, task in enumerate(tasks):
+                        if solver.Value(x[p, ts, l, tid]) == 1:
+                            tt[period][slot][loc] = {
+                                "task":     task,
+                                "assignee": task_to_assignee[task],
                             }
         return {
             "status": "success",
@@ -355,9 +366,9 @@ def _ortools_solve(constraints: dict) -> dict:
         return {
             "status": "infeasible",
             "reason": (
-                "No valid timetable exists with the current constraints. "
-                "Check for conflicting rules (e.g. a professor unavailable on all days, "
-                "or a subject restricted from all rooms)."
+                "No valid schedule exists with the current constraints. "
+                "Check for conflicting rules (e.g. an assignee unavailable on all periods, "
+                "or a task restricted from all locations)."
             ),
         }
     return {"status": "timeout", "reason": "Solver timed out. Try fewer constraints."}
@@ -365,8 +376,13 @@ def _ortools_solve(constraints: dict) -> dict:
 # ── Constraint Merge ─────────────────────────────────────────────────────────────
 def _merge(current: dict, parsed: dict) -> dict:
     c = copy.deepcopy(current)
+    _DICT_MERGE = {
+        "assignees", "location_restrictions", "assignee_unavailability", "time_slot_restrictions",
+        "teachers", "room_restrictions", "professor_unavailability", "slot_restrictions",  # compat
+    }
+    _CORE_FIELDS = {"locations", "time_slots", "periods", "rooms", "slots", "days"}
     for k, v in parsed.items():
-        if k in ("teachers", "room_restrictions", "professor_unavailability", "slot_restrictions"):
+        if k in _DICT_MERGE:
             if isinstance(v, dict):
                 d = c.setdefault(k, {})
                 for kk, vv in v.items():
@@ -377,7 +393,7 @@ def _merge(current: dict, parsed: dict) -> dict:
                                 e.append(i)
                     else:
                         d[kk] = vv
-        elif k == "max_slots_per_day" and isinstance(v, dict):
+        elif k in ("max_per_period", "max_slots_per_day") and isinstance(v, dict):
             c.setdefault(k, {}).update(v)
         elif k in ("custom_rules", "fixed_assignments") and isinstance(v, list):
             e = c.setdefault(k, [])
@@ -385,9 +401,8 @@ def _merge(current: dict, parsed: dict) -> dict:
                 if r not in e:
                     e.append(r)
         elif v:
-            # Protect established core fields from partial-update hallucinations
-            if k in ("rooms", "slots", "days") and c.get(k):
-                pass
+            if k in _CORE_FIELDS and c.get(k):
+                pass  # never overwrite established core fields
             else:
                 c[k] = v
     return c
@@ -395,61 +410,63 @@ def _merge(current: dict, parsed: dict) -> dict:
 # ── Tools ────────────────────────────────────────────────────────────────────────
 @tool
 def extract_constraints(
-    teachers: Dict[str, List[str]],
-    rooms: List[str],
-    slots: List[str],
-    days: List[str],
-    room_restrictions: Optional[Dict[str, List[str]]] = None,
-    slot_restrictions: Optional[Dict[str, List[str]]] = None,
-    professor_unavailability: Optional[Dict[str, List[str]]] = None,
-    max_slots_per_day: Optional[Dict[str, int]] = None,
+    assignees: Dict[str, List[str]],
+    locations: List[str],
+    time_slots: List[str],
+    periods: List[str],
+    location_restrictions: Optional[Dict[str, List[str]]] = None,
+    time_slot_restrictions: Optional[Dict[str, List[str]]] = None,
+    assignee_unavailability: Optional[Dict[str, List[str]]] = None,
+    max_per_period: Optional[Dict[str, int]] = None,
     custom_rules: Optional[List[str]] = None,
 ) -> str:
-    """Store timetable scheduling constraints. YOU (the agent) extract these from the
-    user's message and pass them as typed arguments — no inner LLM call is made here.
+    """Store scheduling constraints. Extract these from the user's message and pass as typed args.
+    Works for ANY domain — school, gym, shifts, meetings, sports, etc.
 
-    teachers: professor-name → list of subjects. Strip titles (Dr./Prof.).
-      e.g. {"Vaibhav": ["AI", "ML"], "Simha": ["DSA", "AA"], "Bob": ["DBMS"]}
-    rooms: list of room names.  e.g. ["A", "B", "C", "D"]
-    slots: list of time slots.  e.g. ["09:00-09:50", "09:50-10:40", "10:55-11:45"]
-    days:  list of working days. e.g. ["Monday", "Tuesday", "Wednesday"]
-    room_restrictions: subjects forbidden from certain rooms.
-      e.g. {"CN": ["D"]}  means CN must never be in Room D
-    slot_restrictions: subjects restricted to specific slots only.
-      e.g. {"AI": ["09:00-09:50", "09:50-10:40"], "ML": ["09:00-09:50", "09:50-10:40"]}
-    professor_unavailability: days a professor cannot teach.
-      e.g. {"Alice": ["Friday"]}
-    max_slots_per_day: max classes a professor can have in one day.
-      e.g. {"Vaibhav": 2}
+    assignees: who/what does each task. e.g.
+      School  → {"Alice": ["Math", "Physics"], "Bob": ["History"]}
+      Gym     → {"trainer": ["squat", "bench", "deadlift"]}
+      Shifts  → {"Alice": ["morning_shift"], "Bob": ["evening_shift"]}
+    locations: where it happens. e.g. ["Room A", "Room B"] / ["gym_floor"] / ["Ward A", "ICU"]
+    time_slots: sub-period time blocks. e.g. ["09:00-10:00", "10:00-11:00"] / ["Morning", "Afternoon"]
+    periods: top-level repeating units. e.g. ["Monday", "Tuesday"] / ["Day 1", "Day 2"]
+    location_restrictions: task forbidden from certain locations. e.g. {"Math": ["Room C"]}
+    time_slot_restrictions: task allowed only in certain time_slots. e.g. {"Math": ["09:00-10:00"]}
+    assignee_unavailability: periods an assignee cannot work. e.g. {"Alice": ["Friday"]}
+    max_per_period: max tasks an assignee can have in one period. e.g. {"Alice": 2}
     custom_rules: any other rules as plain-text strings.
     """
     sess    = _s()
     current = sess.get("constraints", {})
-    parsed: dict = {"teachers": teachers, "rooms": rooms, "slots": slots, "days": days}
-    if room_restrictions:         parsed["room_restrictions"]        = room_restrictions
-    if slot_restrictions:         parsed["slot_restrictions"]         = slot_restrictions
-    if professor_unavailability:  parsed["professor_unavailability"]  = professor_unavailability
-    if max_slots_per_day:         parsed["max_slots_per_day"]         = max_slots_per_day
-    if custom_rules:              parsed["custom_rules"]              = custom_rules
+    parsed: dict = {
+        "assignees": assignees, "locations": locations,
+        "time_slots": time_slots, "periods": periods,
+    }
+    if location_restrictions:   parsed["location_restrictions"]   = location_restrictions
+    if time_slot_restrictions:  parsed["time_slot_restrictions"]  = time_slot_restrictions
+    if assignee_unavailability: parsed["assignee_unavailability"] = assignee_unavailability
+    if max_per_period:          parsed["max_per_period"]          = max_per_period
+    if custom_rules:            parsed["custom_rules"]            = custom_rules
 
     merged = _merge(current, parsed)
     sess["constraints"] = merged
     miss = _missing(merged)
+    _asgn = merged.get("assignees", {})
     return json.dumps({
         "status":      "ready" if not miss else "incomplete",
         "missing":     miss,
         "constraints": merged,
         "summary": {
-            "professors": list(merged.get("teachers", {}).keys()),
-            "subjects":   [s for ss in merged.get("teachers", {}).values() for s in ss],
-            "rooms":      merged.get("rooms", []),
-            "slots":      merged.get("slots", []),
-            "days":       merged.get("days", []),
+            "assignees":  list(_asgn.keys()),
+            "tasks":      [t for ts in _asgn.values() for t in ts],
+            "locations":  merged.get("locations", []),
+            "time_slots": merged.get("time_slots", []),
+            "periods":    merged.get("periods", []),
             "active_restrictions": (
-                len(merged.get("room_restrictions", {}))
-                + len(merged.get("slot_restrictions", {}))
-                + len(merged.get("professor_unavailability", {}))
-                + len(merged.get("max_slots_per_day", {}))
+                len(merged.get("location_restrictions", {}))
+                + len(merged.get("time_slot_restrictions", {}))
+                + len(merged.get("assignee_unavailability", {}))
+                + len(merged.get("max_per_period", {}))
             ),
         },
     })
@@ -496,41 +513,41 @@ def solve_timetable() -> str:
 
 @tool
 def edit_timetable(
-    room_restrictions: Optional[Dict[str, List[str]]] = None,
-    slot_restrictions: Optional[Dict[str, List[str]]] = None,
-    professor_unavailability: Optional[Dict[str, List[str]]] = None,
-    max_slots_per_day: Optional[Dict[str, int]] = None,
+    location_restrictions: Optional[Dict[str, List[str]]] = None,
+    time_slot_restrictions: Optional[Dict[str, List[str]]] = None,
+    assignee_unavailability: Optional[Dict[str, List[str]]] = None,
+    max_per_period: Optional[Dict[str, int]] = None,
     fixed_assignments: Optional[List[Dict[str, str]]] = None,
     custom_rules: Optional[List[str]] = None,
     clear_fixed_assignments: bool = False,
 ) -> str:
-    """Update constraints and regenerate the timetable using OR-Tools.
-    Pass ONLY the constraints that changed. The solver re-runs with the merged constraints.
+    """Update constraints and regenerate the schedule using OR-Tools.
+    Pass ONLY the constraints that changed. The solver re-runs with merged constraints.
 
-    room_restrictions: subjects forbidden from rooms. e.g. {"CN": ["D"]}
-    slot_restrictions: subjects limited to certain slots. e.g. {"AI": ["09:00-09:50"]}
-    professor_unavailability: professors unavailable on certain days. e.g. {"Bob": ["Friday"]}
-    max_slots_per_day: teaching load limit per professor. e.g. {"Vaibhav": 2}
-    fixed_assignments: pin a specific subject to a cell.
-      e.g. [{"day":"Monday","slot":"09:00-09:50","room":"A","subject":"AI"}]
+    location_restrictions: task forbidden from locations. e.g. {"Math": ["Room C"]}
+    time_slot_restrictions: task limited to certain time_slots. e.g. {"Math": ["Morning"]}
+    assignee_unavailability: assignee unavailable on certain periods. e.g. {"Alice": ["Friday"]}
+    max_per_period: max tasks an assignee can have per period. e.g. {"Alice": 2}
+    fixed_assignments: pin a specific task to a cell.
+      e.g. [{"period":"Monday","time_slot":"09:00-10:00","location":"Room A","task":"Math"}]
     custom_rules: additional rule text.
     clear_fixed_assignments: set True when replacing all pinned cells (e.g. a swap).
     """
     sess = _s()
     if not sess.get("timetable"):
-        return json.dumps({"status": "error", "message": "No timetable exists yet. Generate one first."})
+        return json.dumps({"status": "error", "message": "No schedule exists yet. Generate one first."})
 
     current = sess.get("constraints", {})
     if clear_fixed_assignments:
         current.pop("fixed_assignments", None)
 
     delta: dict = {}
-    if room_restrictions:         delta["room_restrictions"]        = room_restrictions
-    if slot_restrictions:         delta["slot_restrictions"]         = slot_restrictions
-    if professor_unavailability:  delta["professor_unavailability"]  = professor_unavailability
-    if max_slots_per_day:         delta["max_slots_per_day"]         = max_slots_per_day
-    if fixed_assignments:         delta["fixed_assignments"]         = fixed_assignments
-    if custom_rules:              delta["custom_rules"]              = custom_rules
+    if location_restrictions:   delta["location_restrictions"]   = location_restrictions
+    if time_slot_restrictions:  delta["time_slot_restrictions"]  = time_slot_restrictions
+    if assignee_unavailability: delta["assignee_unavailability"] = assignee_unavailability
+    if max_per_period:          delta["max_per_period"]          = max_per_period
+    if fixed_assignments:       delta["fixed_assignments"]       = fixed_assignments
+    if custom_rules:            delta["custom_rules"]            = custom_rules
 
     merged = _merge(current, delta)
     sess["constraints"] = merged
@@ -561,65 +578,74 @@ def edit_timetable(
 
 @tool
 def validate_timetable() -> str:
-    """Validate the current timetable against all active constraints.
-    Returns a detailed list of any violations found (conflicts, banned rooms, overloads, etc.)."""
+    """Validate the current schedule against all active constraints.
+    Returns a detailed list of any violations found (conflicts, banned locations, overloads, etc.)."""
     sess = _s()
     tt = sess.get("timetable", {})
     c  = sess.get("constraints", {})
     if not tt:
-        return json.dumps({"status": "error", "message": "No timetable to validate."})
+        return json.dumps({"status": "error", "message": "No schedule to validate."})
+
+    # Merge new + legacy constraint keys
+    loc_restr  = {**c.get("room_restrictions", {}),     **c.get("location_restrictions", {})}
+    ts_restr   = {**c.get("slot_restrictions", {}),     **c.get("time_slot_restrictions", {})}
+    unavail    = {**c.get("professor_unavailability", {}), **c.get("assignee_unavailability", {})}
+    max_pp     = {**c.get("max_slots_per_day", {}),     **c.get("max_per_period", {})}
 
     issues = []
 
-    for day, slots in tt.items():
-        for slot, rooms in slots.items():
-            seen_profs: dict = {}
-            for room, cell in rooms.items():
-                if not isinstance(cell, dict) or not cell.get("subject"):
+    for period, time_slots in tt.items():
+        for ts, locs in time_slots.items():
+            seen_assignees: dict = {}
+            for loc, cell in locs.items():
+                if not isinstance(cell, dict):
                     continue
-                prof = cell.get("professor", "")
-                subj = cell.get("subject",   "")
+                task  = cell.get("task") or cell.get("subject", "")
+                asgn  = cell.get("assignee") or cell.get("professor", "")
+                if not task:
+                    continue
 
-                if prof in seen_profs:
+                if asgn and asgn in seen_assignees:
                     issues.append(
-                        f"DOUBLE-BOOKING: {prof} in rooms {seen_profs[prof]} and {room} "
-                        f"— {day} {slot}"
+                        f"DOUBLE-BOOKING: {asgn} in {seen_assignees[asgn]} and {loc} "
+                        f"— {period} {ts}"
                     )
-                seen_profs[prof] = room
+                if asgn:
+                    seen_assignees[asgn] = loc
 
-                if room in c.get("room_restrictions", {}).get(subj, []):
-                    issues.append(f"ROOM VIOLATION: {subj} in restricted room {room} — {day} {slot}")
+                if loc in loc_restr.get(task, []):
+                    issues.append(f"LOCATION VIOLATION: {task} in restricted location {loc} — {period} {ts}")
 
-                allowed = c.get("slot_restrictions", {}).get(subj)
-                if allowed and slot not in allowed:
-                    issues.append(f"SLOT VIOLATION: {subj} in non-allowed slot {slot} — {day}")
+                allowed_ts = ts_restr.get(task)
+                if allowed_ts and ts not in allowed_ts:
+                    issues.append(f"TIME-SLOT VIOLATION: {task} in non-allowed slot {ts} — {period}")
 
-        for prof, ud in c.get("professor_unavailability", {}).items():
-            if day in ud:
-                for slot, rooms in slots.items():
-                    for cell in rooms.values():
-                        if isinstance(cell, dict) and cell.get("professor") == prof:
-                            issues.append(
-                                f"UNAVAILABILITY: {prof} scheduled on {day} at {slot}"
-                            )
+        for asgn, ud in unavail.items():
+            if period in ud:
+                for ts, locs in time_slots.items():
+                    for cell in locs.values():
+                        a = cell.get("assignee") or cell.get("professor", "") if isinstance(cell, dict) else ""
+                        if a == asgn:
+                            issues.append(f"UNAVAILABILITY: {asgn} scheduled on {period} at {ts}")
 
-    for prof, max_s in c.get("max_slots_per_day", {}).items():
-        for day, slots in tt.items():
+    for asgn, max_v in max_pp.items():
+        for period, time_slots in tt.items():
             count = sum(
-                1 for s_data in slots.values()
-                for cell in s_data.values()
-                if isinstance(cell, dict) and cell.get("professor") == prof
+                1 for ts_data in time_slots.values()
+                for cell in ts_data.values()
+                if isinstance(cell, dict)
+                and (cell.get("assignee") or cell.get("professor", "")) == asgn
             )
-            if count > max_s:
+            if count > max_v:
                 issues.append(
-                    f"OVERLOAD: {prof} teaches {count} slots on {day} (max allowed: {max_s})"
+                    f"OVERLOAD: {asgn} has {count} tasks on {period} (max allowed: {max_v})"
                 )
 
     return json.dumps({
         "status":      "valid" if not issues else "violations_found",
         "issue_count": len(issues),
         "issues":      issues[:20],
-        "message":     "Timetable is valid!" if not issues else f"{len(issues)} violation(s) found.",
+        "message":     "Schedule is valid!" if not issues else f"{len(issues)} violation(s) found.",
     })
 
 
@@ -711,56 +737,66 @@ TOOLS = [
 ]
 
 _SYSTEM = SystemMessage(content="""\
-You are SLOT AI — a general-purpose scheduling and timetable assistant with a warm, natural personality.
-You can schedule ANYTHING: school classes, university lectures, gym workouts, work shifts, meetings, sports sessions, personal routines — any domain where things need to be assigned to time slots.
-You have access to an OR-Tools CP-SAT constraint solver via tools. You are a conversational agent first.
+You are SLOT AI — a smart, friendly scheduling assistant. You work in two distinct modes.
+
+━━ MODE 1: CONVERSATIONAL (no tools) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Use this mode — respond directly without calling any tools — when:
+• The request is open-ended or flexible: "plan my trip", "give me a gym routine", "help me organize my week"
+• There are few entities with no real hard conflicts (1-3 people, simple preferences)
+• The user wants suggestions, ideas, or a general plan — not strict constraint solving
+• It's a personal schedule where YOU can just write a sensible plan from knowledge
+
+Examples → respond directly, NO tools:
+  "Plan a 3-day trip to Paris for me"
+  "Make me a gym schedule for Mon/Wed/Fri, chest-back-legs split"
+  "Schedule 3 client meetings for me this week, I'm free after 10am"
+  "Give me a study plan for my exams next week"
+  "What's a good morning routine?"
+
+In conversational mode: write a clear, readable plan directly in your reply. Be helpful and specific.
+
+━━ MODE 2: OR-TOOLS SOLVER (use tools) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Use tools ONLY when the request has HARD CONSTRAINTS requiring a formal solver:
+• Many entities that conflict (multiple people/resources that can't overlap)
+• Strict rules that must ALL be satisfied simultaneously
+• Recurring structured schedules needing formal verification (school, hospital, factory)
+• The user explicitly asks to "generate a timetable", "create a roster", "book rooms", etc.
+
+Examples → use tools:
+  "Schedule 8 teachers across 4 rooms, 6 periods a day, Mon-Fri, no teacher in two rooms at once"
+  "Create a shift roster for 15 nurses, 3 wards, morning/evening/night shifts, max 5 shifts/week each"
+  "Book 3 conference rooms for 10 departments, no double-booking"
+  "Generate a university timetable with room and professor constraints"
+
+━━ TOOL REFERENCE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  extract_constraints  → parse & store all scheduling info; call before solve_timetable
+  solve_timetable      → run OR-Tools solver to generate the schedule
+  edit_timetable       → update constraints and regenerate (pass ONLY what changed)
+  show_timetable       → display the schedule in the UI
+  validate_timetable   → check for constraint violations
+  get_timetable_history / compare_timetables → version management
+
+GENERIC FIELD MAPPING — tools use domain-agnostic parameter names:
+  assignees  → {"Alice": ["Math","Physics"]} / {"trainer": ["squat","bench"]} / {"Alice": ["morning_shift"]}
+  locations  → ["Room A","Room B"] / ["gym_floor"] / ["Ward A","ICU"] / ["Court 1"]
+  time_slots → ["09:00-10:00","10:00-11:00"] / ["Morning","Afternoon"] / ["Set 1","Set 2"]
+  periods    → ["Monday","Tuesday"] / ["Day 1","Day 2"] / ["Week 1 Mon"]
+
+WORKFLOW (solver mode):
+1. Full info → extract_constraints → solve_timetable
+2. Partial info → extract_constraints with what's available, ask for the rest
+3. Edit request → edit_timetable (delta only, clear_fixed_assignments=True for swaps)
+4. View → show_timetable
+5. Infeasible → explain which constraints conflict and suggest how to resolve
+
+DISCIPLINE:
+• Never call solve_timetable without a prior successful extract_constraints this conversation
+• If the user is vague ("make a schedule"), ask what they need — don't silently reuse old data
+• When in doubt about which mode to use, default to conversational and offer the solver if needed
 
 PERSONALITY:
-- Respond naturally to any message. Greetings, small talk, questions — handle them like a smart, friendly colleague.
-- Never repeat the same phrasing twice. Vary your tone and wording naturally every time.
-- Never sound robotic or scripted.
-- Only call tools when the user is clearly asking you to schedule something. For everything else, just converse.
-
-DOMAIN MAPPING — the solver uses generic field names. Map ANY domain onto them:
-  "teachers"   → whoever is doing the activity: trainer, instructor, employee, machine, person
-  "subjects"   → what is being scheduled: workout, task, class, meeting, exercise, shift
-  "rooms"      → where it happens: gym, room, court, zone, equipment, location
-  "slots"      → time blocks: "09:00-10:00", "Morning", "Round 1", anything
-  "days"       → days or sessions: Monday, Day 1, Week 1, etc.
-  "professor_unavailability" → when an assignee is unavailable
-  "max_slots_per_day"        → max sessions per day for an assignee
-  "room_restrictions"        → activity forbidden from a location
-  "slot_restrictions"        → activity restricted to certain time blocks
-
-TOOLS AVAILABLE:
-  extract_constraints  — parse and store all scheduling info from the user's message
-  solve_timetable      — run the solver to generate the schedule
-  edit_timetable       — update specific constraints and regenerate
-  show_timetable       — display the current schedule in the UI
-  validate_timetable   — check for violations
-  get_timetable_history / compare_timetables — version history
-
-HOW TO CALL extract_constraints — YOU read the user's message and fill every arg:
-- teachers: {"assignee_name": ["activity1", "activity2"]}
-- rooms: ["location1", "location2"]
-- slots: ["time_block1", "time_block2"]  — exclude breaks/rest periods
-- days: ["Day1", "Day2"]
-- room_restrictions, slot_restrictions, professor_unavailability, max_slots_per_day, custom_rules as applicable
-
-HOW TO CALL edit_timetable:
-Pass ONLY what changed. Use clear_fixed_assignments=True for swaps.
-
-SCHEDULING WORKFLOW:
-1. Full info given → extract_constraints → solve_timetable
-2. Partial info → extract_constraints with what's available, ask for what's missing
-3. Change requested → edit_timetable with only the delta
-4. INFEASIBLE → explain which constraints conflict and suggest how to resolve
-5. User wants to view the schedule → call show_timetable
-
-TOOL CALL DISCIPLINE — CRITICAL:
-- Never call solve_timetable unless extract_constraints has already been called successfully earlier in THIS conversation, or the user's current message contains all the scheduling data needed.
-- If the user says something vague like "generate a timetable" or "make a schedule" WITHOUT providing details in their current message, respond naturally and ask what they want to schedule — do NOT silently reuse old constraints.
-- Never call any scheduling tool based solely on context carried over from old messages when the user's current intent is ambiguous. When in doubt, ask.\
+• Warm, natural, never robotic — vary tone and phrasing every response
+• Handle greetings and small talk like a smart, friendly colleague\
 """)
 
 class AgentState(TypedDict):
