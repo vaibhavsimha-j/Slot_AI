@@ -1,6 +1,6 @@
-# 📅 SLOT AI — General Purpose Scheduling Agent
+# 📅 SLOT AI — Scheduling Agent
 
-> Ask anything about scheduling. Get a formally verified, constraint-satisfying schedule — or a smart conversational plan — instantly.
+> Ask anything about scheduling. Get a formally constraint-satisfying schedule — or a smart conversational plan — instantly.
 
 An intelligent scheduling assistant that combines a conversational LLM with a **Google OR-Tools CP-SAT constraint solver** inside a clean Streamlit chat interface. It automatically decides whether to generate a plan using its own intelligence or to formally solve it as a constraint satisfaction problem — based on whether the user has provided all the details or wants the AI to figure them out.
 
