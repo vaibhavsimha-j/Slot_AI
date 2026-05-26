@@ -867,24 +867,94 @@ st.title("🤖 SLOT AI")
 # Inject CSS: remove red/orange from buttons; keep everything dark-theme neutral
 st.markdown("""
 <style>
-/* ── All sidebar buttons: dark-theme neutral ── */
-section[data-testid="stSidebar"] button {
-    background-color: rgba(255,255,255,0.06) !important;
-    color: rgba(255,255,255,0.88) !important;
-    border: 1px solid rgba(255,255,255,0.12) !important;
-    border-radius: 6px !important;
-}
-section[data-testid="stSidebar"] button:hover {
-    background-color: rgba(255,255,255,0.13) !important;
-    border-color: rgba(255,255,255,0.28) !important;
-}
-section[data-testid="stSidebar"] button[kind="primary"] {
-    background-color: rgba(255,255,255,0.16) !important;
-    border-color: rgba(255,255,255,0.35) !important;
-    font-weight: 600 !important;
+/* ── Main app: pure white background ── */
+.stApp {
+    background-color: #ffffff !important;
 }
 
-/* ── Password field: flush eye icon to right edge ── */
+/* ── Sidebar: soft warm gray ── */
+section[data-testid="stSidebar"] {
+    background-color: #f0efec !important;
+}
+section[data-testid="stSidebar"] > div {
+    background-color: #f0efec !important;
+}
+
+/* ── Global text: black ── */
+.stApp, .stMarkdown, .stChatMessage,
+p, span, label, div, h1, h2, h3, h4, h5, h6, caption {
+    color: #111111 !important;
+}
+
+/* ── All buttons: transparent background, black border, black text ── */
+button {
+    background-color: transparent !important;
+    color: #111111 !important;
+    border: 1.5px solid #111111 !important;
+    border-radius: 6px !important;
+    box-shadow: none !important;
+}
+button:hover {
+    background-color: rgba(0, 0, 0, 0.05) !important;
+    border-color: #111111 !important;
+}
+button:active {
+    background-color: rgba(0, 0, 0, 0.10) !important;
+}
+
+/* ── Primary (active chat) button: subtle black fill ── */
+button[kind="primary"] {
+    background-color: rgba(0, 0, 0, 0.08) !important;
+    font-weight: 600 !important;
+}
+button[kind="primary"]:hover {
+    background-color: rgba(0, 0, 0, 0.13) !important;
+}
+
+/* ── Input fields: white bg, black border, black text ── */
+[data-baseweb="base-input"], input, textarea {
+    background-color: #ffffff !important;
+    color: #111111 !important;
+    border-color: #111111 !important;
+}
+[data-baseweb="base-input"]:focus-within {
+    border-color: #111111 !important;
+    box-shadow: none !important;
+}
+
+/* ── Chat input bar ── */
+[data-testid="stChatInput"] textarea {
+    background-color: #ffffff !important;
+    color: #111111 !important;
+    border: 1.5px solid #111111 !important;
+}
+[data-testid="stChatInput"] {
+    background-color: #ffffff !important;
+}
+
+/* ── Chat messages: transparent, no colored bubble ── */
+[data-testid="stChatMessage"] {
+    background-color: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+}
+
+/* ── Dataframe / table: white background ── */
+[data-testid="stDataFrame"], .stDataFrame iframe {
+    background-color: #ffffff !important;
+}
+
+/* ── Dividers ── */
+hr {
+    border-color: #cccccc !important;
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: #f0efec; }
+::-webkit-scrollbar-thumb { background: #bbbbbb; border-radius: 4px; }
+
+/* ── Password field: flush eye icon ── */
 section[data-testid="stSidebar"] [data-testid="stTextInput"] [data-baseweb="base-input"] {
     padding-right: 0 !important;
 }
@@ -892,18 +962,26 @@ section[data-testid="stSidebar"] [data-testid="stTextInput"] [data-baseweb="base
     padding-right: 0 !important;
 }
 
-/* ── Chat row: collapse gap between title button and ⋮ button ── */
+/* ── Chat row: tight gap between title and ⋮ button ── */
 section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] {
     gap: 2px !important;
     align-items: center !important;
 }
-/* ── ⋮ popover button: compact, no extra padding ── */
+
+/* ── ⋮ popover button: compact ── */
 section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"]
     div[data-testid="stColumn"]:last-child button {
     padding: 2px 4px !important;
     min-height: 0 !important;
     font-size: 16px !important;
     line-height: 1.2 !important;
+}
+
+/* ── Popover panel: white background ── */
+[data-testid="stPopover"], [data-testid="stPopoverContent"] {
+    background-color: #ffffff !important;
+    border: 1.5px solid #111111 !important;
+    border-radius: 8px !important;
 }
 
 </style>
