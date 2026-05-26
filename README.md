@@ -301,7 +301,8 @@ Keys are entered via the sidebar and are **never stored** — they exist only wi
 
 **Vaibhav Simha J**
 
-🔗 https://www.linkedin.com/in/vaibhav-simha-j-0b46b5327/
+🔗 https://www.linkedin.com/in/vaibhav-simha-j-0b46b5327/ 
+
 📧 vaibhavsimhajworks@gmail.com
 
 ---
