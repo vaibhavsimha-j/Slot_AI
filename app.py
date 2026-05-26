@@ -867,92 +867,110 @@ st.title("🤖 SLOT AI")
 # Inject CSS: remove red/orange from buttons; keep everything dark-theme neutral
 st.markdown("""
 <style>
-/* ── Main app: pure white background ── */
+/* ── Main background: deep navy ── */
 .stApp {
-    background-color: #ffffff !important;
+    background-color: #0d1b2a !important;
 }
 
-/* ── Sidebar: soft warm gray ── */
+/* ── Sidebar: slightly lighter navy with a right-edge separator ── */
 section[data-testid="stSidebar"] {
-    background-color: #f0efec !important;
+    background-color: #132035 !important;
+    border-right: 1px solid rgba(99,179,237,0.12) !important;
 }
 section[data-testid="stSidebar"] > div {
-    background-color: #f0efec !important;
+    background-color: #132035 !important;
 }
 
-/* ── Global text: black ── */
-.stApp, .stMarkdown, .stChatMessage,
-p, span, label, div, h1, h2, h3, h4, h5, h6, caption {
-    color: #111111 !important;
+/* ── Sidebar text ── */
+section[data-testid="stSidebar"] * {
+    color: rgba(255,255,255,0.82) !important;
 }
 
-/* ── All buttons: transparent background, black border, black text ── */
-button {
-    background-color: transparent !important;
-    color: #111111 !important;
-    border: 1.5px solid #111111 !important;
-    border-radius: 6px !important;
-    box-shadow: none !important;
+/* ── Sidebar buttons: neutral ghost ── */
+section[data-testid="stSidebar"] button {
+    background-color: rgba(255,255,255,0.05) !important;
+    color: rgba(255,255,255,0.82) !important;
+    border: 1px solid rgba(255,255,255,0.12) !important;
+    border-radius: 8px !important;
+    transition: background 0.18s, border-color 0.18s !important;
 }
-button:hover {
-    background-color: rgba(0, 0, 0, 0.05) !important;
-    border-color: #111111 !important;
-}
-button:active {
-    background-color: rgba(0, 0, 0, 0.10) !important;
+section[data-testid="stSidebar"] button:hover {
+    background-color: rgba(99,179,237,0.14) !important;
+    border-color: rgba(99,179,237,0.42) !important;
+    color: #ffffff !important;
 }
 
-/* ── Primary (active chat) button: subtle black fill ── */
-button[kind="primary"] {
-    background-color: rgba(0, 0, 0, 0.08) !important;
+/* ── Active chat button (primary) ── */
+section[data-testid="stSidebar"] button[kind="primary"] {
+    background-color: rgba(99,179,237,0.18) !important;
+    border-color: rgba(99,179,237,0.50) !important;
+    color: #ffffff !important;
     font-weight: 600 !important;
 }
-button[kind="primary"]:hover {
-    background-color: rgba(0, 0, 0, 0.13) !important;
+section[data-testid="stSidebar"] button[kind="primary"]:hover {
+    background-color: rgba(99,179,237,0.26) !important;
 }
 
-/* ── Input fields: white bg, black border, black text ── */
-[data-baseweb="base-input"], input, textarea {
-    background-color: #ffffff !important;
-    color: #111111 !important;
-    border-color: #111111 !important;
+/* ── Main area buttons ── */
+.stApp > section:not([data-testid="stSidebar"]) button {
+    background-color: rgba(99,179,237,0.10) !important;
+    color: #e2f0ff !important;
+    border: 1px solid rgba(99,179,237,0.32) !important;
+    border-radius: 8px !important;
+    transition: background 0.18s, border-color 0.18s !important;
 }
-[data-baseweb="base-input"]:focus-within {
-    border-color: #111111 !important;
-    box-shadow: none !important;
+.stApp > section:not([data-testid="stSidebar"]) button:hover {
+    background-color: rgba(99,179,237,0.22) !important;
+    border-color: rgba(99,179,237,0.60) !important;
 }
 
-/* ── Chat input bar ── */
+/* ── Chat input ── */
 [data-testid="stChatInput"] textarea {
-    background-color: #ffffff !important;
-    color: #111111 !important;
-    border: 1.5px solid #111111 !important;
+    background-color: rgba(255,255,255,0.05) !important;
+    border: 1px solid rgba(99,179,237,0.28) !important;
+    border-radius: 10px !important;
+    color: #e8f0fe !important;
+    transition: border-color 0.2s !important;
+}
+[data-testid="stChatInput"] textarea:focus {
+    border-color: rgba(99,179,237,0.65) !important;
+    box-shadow: 0 0 0 3px rgba(99,179,237,0.12) !important;
 }
 [data-testid="stChatInput"] {
-    background-color: #ffffff !important;
+    background-color: #0d1b2a !important;
 }
 
-/* ── Chat messages: transparent, no colored bubble ── */
+/* ── Chat message bubbles ── */
 [data-testid="stChatMessage"] {
-    background-color: transparent !important;
-    border: none !important;
-    box-shadow: none !important;
+    background-color: rgba(255,255,255,0.03) !important;
+    border: 1px solid rgba(255,255,255,0.06) !important;
+    border-radius: 12px !important;
+    transition: background 0.15s !important;
+}
+[data-testid="stChatMessage"]:hover {
+    background-color: rgba(99,179,237,0.05) !important;
 }
 
-/* ── Dataframe / table: white background ── */
-[data-testid="stDataFrame"], .stDataFrame iframe {
-    background-color: #ffffff !important;
+/* ── Input fields ── */
+[data-baseweb="base-input"] {
+    background-color: rgba(255,255,255,0.05) !important;
+    border-color: rgba(99,179,237,0.25) !important;
+}
+[data-baseweb="base-input"]:focus-within {
+    border-color: rgba(99,179,237,0.55) !important;
+    box-shadow: 0 0 0 2px rgba(99,179,237,0.12) !important;
 }
 
 /* ── Dividers ── */
 hr {
-    border-color: #cccccc !important;
+    border-color: rgba(255,255,255,0.08) !important;
 }
 
 /* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
-::-webkit-scrollbar-track { background: #f0efec; }
-::-webkit-scrollbar-thumb { background: #bbbbbb; border-radius: 4px; }
+::-webkit-scrollbar-track { background: #0d1b2a; }
+::-webkit-scrollbar-thumb { background: rgba(99,179,237,0.28); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(99,179,237,0.50); }
 
 /* ── Password field: flush eye icon ── */
 section[data-testid="stSidebar"] [data-testid="stTextInput"] [data-baseweb="base-input"] {
@@ -977,11 +995,11 @@ section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"]
     line-height: 1.2 !important;
 }
 
-/* ── Popover panel: white background ── */
-[data-testid="stPopover"], [data-testid="stPopoverContent"] {
-    background-color: #ffffff !important;
-    border: 1.5px solid #111111 !important;
-    border-radius: 8px !important;
+/* ── Popover panel ── */
+[data-testid="stPopoverContent"] {
+    background-color: #1a2d45 !important;
+    border: 1px solid rgba(99,179,237,0.25) !important;
+    border-radius: 10px !important;
 }
 
 </style>
