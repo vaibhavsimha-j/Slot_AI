@@ -60,29 +60,14 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    U([👤 User]) --> ST
-
-    subgraph UI ["🖥️ Streamlit"]
-        ST[Chat Interface]
-        OUT[Schedule View & Export]
-    end
-
-    ST --> LG
-
-    subgraph Agent ["🧠 LangGraph"]
-        LG[Agent Loop]
-        MEM[MemorySaver]
-        LG <--> MEM
-    end
-
+    U([👤 User]) --> ST["🖥️ Streamlit\nChat Interface"]
+    ST --> LG["🧠 LangGraph\nAgent Loop"]
+    LG <--> MEM["💾 MemorySaver"]
     LG --> GROQ["⚡ Groq API\nllama-3.3-70b-versatile"]
-
-    GROQ -->|Conversational reply| OUT
+    GROQ -->|Conversational reply| OUT["🖥️ Streamlit\nSchedule View & Export"]
     GROQ -->|Solver mode| ORT["📐 OR-Tools\nCP-SAT"]
-
     ORT --> PD["🐼 Pandas"]
     PD --> OUT
-
     OUT --> EXP["📄 FPDF2 / OpenPyXL\nPDF · Excel"]
     EXP --> U
 ```
