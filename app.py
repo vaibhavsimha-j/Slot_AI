@@ -35,8 +35,6 @@ _DEFAULTS = dict(
 )
 for k, v in _DEFAULTS.items():
     st.session_state.setdefault(k, v)
-if not st.session_state.api_key and os.getenv("GROQ_API_KEY"):
-    st.session_state.api_key = os.getenv("GROQ_API_KEY", "")
 if "thread_memories" not in st.session_state:
     st.session_state.thread_memories = {}
 if "thread_agents" not in st.session_state:
