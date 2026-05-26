@@ -56,6 +56,39 @@ flowchart TD
 
 ---
 
+## 🔗 Component Flow
+
+```mermaid
+flowchart LR
+    U([👤 User]) --> ST
+
+    subgraph UI ["🖥️ Streamlit"]
+        ST[Chat Interface]
+        OUT[Schedule View & Export]
+    end
+
+    ST --> LG
+
+    subgraph Agent ["🧠 LangGraph"]
+        LG[Agent Loop]
+        MEM[MemorySaver]
+        LG <--> MEM
+    end
+
+    LG --> GROQ["⚡ Groq API\nllama-3.3-70b-versatile"]
+
+    GROQ -->|Conversational reply| OUT
+    GROQ -->|Solver mode| ORT["📐 OR-Tools\nCP-SAT"]
+
+    ORT --> PD["🐼 Pandas"]
+    PD --> OUT
+
+    OUT --> EXP["📄 FPDF2 / OpenPyXL\nPDF · Excel"]
+    EXP --> U
+```
+
+---
+
 ## ⚙️ How It Works
 
 ### The One Decision Rule
