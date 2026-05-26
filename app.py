@@ -862,7 +862,7 @@ def _export_excel():
     return buf.getvalue()
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────────
-st.title("🤖 SLOT AI")
+st.title("SLOT AI")
 
 # Inject CSS: remove red/orange from buttons; keep everything dark-theme neutral
 st.markdown("""
