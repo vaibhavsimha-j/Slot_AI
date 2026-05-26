@@ -21,32 +21,24 @@ An intelligent scheduling assistant that combines a conversational LLM with a **
 
 ## 🏗️ System Architecture
 
-```
-User Message
-     │
-     ▼
-┌─────────────────────────────────────┐
-│         LangGraph Agent             │
-│   (llama-3.3-70b-versatile / Groq)  │
-│                                     │
-│  Did user provide all details?      │
-│                                     │
-│  YES ──► Solver Mode                │
-│           extract_constraints()     │
-│                │                    │
-│           solve_timetable()         │
-│                │                    │
-│         OR-Tools CP-SAT ◄───────────┤
-│         (Google OR-Tools)           │
-│                                     │
-│  NO  ──► Conversational Mode        │
-│          LLM generates plan         │
-│          directly in reply          │
-└─────────────────────────────────────┘
-          │
-          ▼
-   Streamlit UI
-   (Chat + Schedule View + Export)
+```mermaid
+flowchart TD
+    A([🧑 User Message]) --> B
+
+    B["🧠 LangGraph Agent\nllama-3.3-70b-versatile · Groq"]
+    B --> C{Did user provide\nall the details?}
+
+    C -- YES --> D["🔧 extract_constraints()"]
+    D --> E["⚙️ solve_timetable()"]
+    E --> F["📐 OR-Tools CP-SAT Solver\nGoogle OR-Tools"]
+    F --> G["✅ Verified Schedule"]
+
+    C -- NO --> H["💬 Conversational Mode\nLLM generates plan directly"]
+
+    G --> I
+    H --> I
+
+    I(["🖥️ Streamlit UI\nChat · Schedule View · Export"])
 ```
 
 ---
