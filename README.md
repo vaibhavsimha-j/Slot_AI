@@ -300,7 +300,7 @@ Keys are entered via the sidebar and are **never stored** — they exist only wi
 ## 👨‍💻 Author
 
 **Vaibhav Simha J**
-Bangalore
+
 📧 vaibhavsimhajworks@gmail.com
 
 ---
