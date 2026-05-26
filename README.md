@@ -300,14 +300,14 @@ Keys are entered via the sidebar and are **never stored** — they exist only wi
 ## 👨‍💻 Author
 
 **Vaibhav Simha J**
-B.Tech CSE (AI & ML) — JAIN (Deemed-to-be University), Bangalore
-📧 22btrcl163@jainuniversity.ac.in
+Bangalore
+📧 vaibhavsimhajworks@gmail.com
 
 ---
 
 ## 📄 License
 
-This project was developed as part of B.Tech studies at JAIN (Deemed-to-be University). Feel free to explore, learn from, and build upon this work with appropriate attribution.
+This project was developed by Vaibhav Simha J. Feel free to explore, learn from, and build upon this work with appropriate attribution.
 
 ---
 
