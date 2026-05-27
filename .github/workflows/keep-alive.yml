@@ -2,11 +2,12 @@ name: Keep Alive
 
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
 
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
       - name: Ping Slot AI
-        run: curl -s -o /dev/null https://slotai.streamlit.app
+        run: curl -A "Mozilla/5.0" -L "https://slotai.streamlit.app" -o /dev/null -s || true
