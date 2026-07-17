@@ -295,7 +295,7 @@ The entire application lives in `app.py` for simplicity of deployment and demons
 
 | Service | Purpose | Get Key |
 |---|---|---|
-| Google | Serves `Google Gemini Flash Model` for conversational responses and tool-calling | [aistudio.google.com](https://aistudio.google.com/) |
+| Google | Serves `Gemini Flash Model` for conversational responses and tool-calling | [aistudio.google.com](https://aistudio.google.com/) |
 
 Keys are entered via the sidebar and are **never stored** — they exist only within your active Streamlit session.
 
