@@ -45,7 +45,7 @@ flowchart TD
 | UI | Streamlit | Chat interface, schedule display, file export |
 | LLM | Google — `Gemini Flash Model` | Conversational responses + tool-calling decisions |
 | Agent Framework | LangGraph (StateGraph + ToolNode) | Multi-turn agent with tool orchestration |
-| LLM Client | LangChain-google-genai | Google-genai API integration |
+| LLM Client | langchain-google-genai | Google Gemini API integration |
 | Constraint Solver | Google OR-Tools CP-SAT | Formally verified schedule generation |
 | Data / Export | Pandas, OpenPyXL, FPDF2 | Tabular display, Excel and PDF export |
 
