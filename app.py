@@ -1009,7 +1009,15 @@ if prompt := st.chat_input("What would you like to schedule today?"):
                     {"messages": [HumanMessage(content=prompt)]},
                     config,
                 )
-                reply = result["messages"][-1].content
+                last_msg = result["messages"][-1]
+                content = last_msg.content
+                if isinstance(content, list):
+                    reply = " ".join(
+                        block.get("text", "") for block in content
+                        if isinstance(block, dict) and block.get("type") == "text"
+                    )
+                else:
+                    reply = content
             except Exception as e:
                 err = str(e)
                 result = None
@@ -1023,6 +1031,11 @@ if prompt := st.chat_input("What would you like to schedule today?"):
         if result:
             for m in result.get("messages", []):
                 raw = getattr(m, "content", "")
+                if isinstance(raw, list):
+                    raw = " ".join(
+                        block.get("text", "") for block in raw
+                        if isinstance(block, dict) and block.get("type") == "text"
+                    )
                 if not isinstance(raw, str):
                     continue
                 try:
