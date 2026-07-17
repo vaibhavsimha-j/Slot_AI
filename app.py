@@ -1,5 +1,5 @@
 """SLOT AI — General Purpose Scheduling Agent
-pip install streamlit langchain-groq langgraph langchain-core ortools pydantic pandas openpyxl fpdf2
+pip install streamlit langchain-google-genai langgraph langchain-core ortools pydantic pandas openpyxl fpdf2
 streamlit run app.py
 """
 import os, json, copy, uuid, threading
@@ -9,7 +9,7 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 
-from langchain_groq import ChatGroq
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph
@@ -19,7 +19,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from ortools.sat.python import cp_model
 
 # ── Config ──────────────────────────────────────────────────────────────────────
-MODEL = "llama-3.3-70b-versatile"
+MODEL = "gemini-flash-latest"
 st.set_page_config(page_title="SLOT AI", layout="wide")
 
 # ── Session Init ────────────────────────────────────────────────────────────────
@@ -127,11 +127,9 @@ def _delete_chat(tid: str):
         else:
             _new_chat()
 
-# ── Session store — tools cannot access st.session_state, so we use a thread-local
-# to carry the active session id into tool calls (LangGraph invoke is synchronous,
-# so the tool always runs on the same OS thread as the Streamlit script).
-_tl    = threading.local()          # carries session_id for the current thread
-_STORE: dict[str, dict] = {}        # per-session state dicts, keyed by thread_id
+# ── Session store ────────────────────────────────────────────────────────────────
+_tl    = threading.local()
+_STORE: dict[str, dict] = {}
 
 def _s() -> dict:
     """Return the mutable state dict for the current session."""
@@ -144,10 +142,9 @@ def _s() -> dict:
     })
 
 # ── Utilities ───────────────────────────────────────────────────────────────────
-def _get_llm(t: float = 0.0) -> ChatGroq:
-    # api_key is injected into os.environ["GROQ_API_KEY"] before every agent invocation
-    # so ChatGroq picks it up automatically — avoids asyncio context propagation issues
-    return ChatGroq(
+def _get_llm(t: float = 0.0) -> ChatGoogleGenerativeAI:
+    # api_key is injected into os.environ["GOOGLE_API_KEY"] before every agent invocation
+    return ChatGoogleGenerativeAI(
         model=MODEL,
         temperature=t,
     )
@@ -236,7 +233,6 @@ def _missing(c: dict) -> list:
 
 # ── OR-Tools CP-SAT Solver ──────────────────────────────────────────────────────
 def _ortools_solve(constraints: dict) -> dict:
-    # Support both new generic names and legacy school-specific names
     assignees  = constraints.get("assignees")  or constraints.get("teachers", {})
     locations  = constraints.get("locations")  or constraints.get("rooms", [])
     time_slots = constraints.get("time_slots") or constraints.get("slots", [])
@@ -256,13 +252,11 @@ def _ortools_solve(constraints: dict) -> dict:
         for l in range(n_l) for t in range(n_t)
     }
 
-    # Each location has exactly one task per time_slot per period
     for p in range(n_p):
         for ts in range(n_ts):
             for l in range(n_l):
                 model.AddExactlyOne(x[p, ts, l, t] for t in range(n_t))
 
-    # No assignee double-booked in the same time_slot
     for p in range(n_p):
         for ts in range(n_ts):
             for asgn, asgn_tasks in assignees.items():
@@ -272,7 +266,6 @@ def _ortools_solve(constraints: dict) -> dict:
                         sum(x[p, ts, l, tid] for l in range(n_l) for tid in ids) <= 1
                     )
 
-    # Assignee unavailability (new key + legacy key)
     unavail = {**constraints.get("professor_unavailability", {}),
                **constraints.get("assignee_unavailability", {})}
     for asgn, unavail_periods in unavail.items():
@@ -284,7 +277,6 @@ def _ortools_solve(constraints: dict) -> dict:
                         for tid in ids:
                             model.Add(x[p, ts, l, tid] == 0)
 
-    # Location restrictions (new key + legacy key)
     loc_restr = {**constraints.get("room_restrictions", {}),
                  **constraints.get("location_restrictions", {})}
     for task, forbidden in loc_restr.items():
@@ -296,7 +288,6 @@ def _ortools_solve(constraints: dict) -> dict:
                         for ts in range(n_ts):
                             model.Add(x[p, ts, l, tid] == 0)
 
-    # Time-slot restrictions (new key + legacy key)
     ts_restr = {**constraints.get("slot_restrictions", {}),
                 **constraints.get("time_slot_restrictions", {})}
     for task, allowed in ts_restr.items():
@@ -308,7 +299,6 @@ def _ortools_solve(constraints: dict) -> dict:
                         for l in range(n_l):
                             model.Add(x[p, ts, l, tid] == 0)
 
-    # Max tasks per period per assignee (new key + legacy key)
     max_pp = {**constraints.get("max_slots_per_day", {}),
               **constraints.get("max_per_period", {})}
     for asgn, max_v in max_pp.items():
@@ -319,14 +309,12 @@ def _ortools_solve(constraints: dict) -> dict:
                     for ts in range(n_ts) for l in range(n_l) for tid in ids) <= max_v
             )
 
-    # Every task must appear at least once across all periods
     for t in range(n_t):
         model.Add(
             sum(x[p, ts, l, t]
                 for p in range(n_p) for ts in range(n_ts) for l in range(n_l)) >= 1
         )
 
-    # Fixed assignments
     for fa in constraints.get("fixed_assignments", []):
         try:
             p   = periods.index(fa.get("period") or fa.get("day"))
@@ -376,7 +364,7 @@ def _merge(current: dict, parsed: dict) -> dict:
     c = copy.deepcopy(current)
     _DICT_MERGE = {
         "assignees", "location_restrictions", "assignee_unavailability", "time_slot_restrictions",
-        "teachers", "room_restrictions", "professor_unavailability", "slot_restrictions",  # compat
+        "teachers", "room_restrictions", "professor_unavailability", "slot_restrictions",
     }
     _CORE_FIELDS = {"locations", "time_slots", "periods", "rooms", "slots", "days"}
     for k, v in parsed.items():
@@ -400,7 +388,7 @@ def _merge(current: dict, parsed: dict) -> dict:
                     e.append(r)
         elif v:
             if k in _CORE_FIELDS and c.get(k):
-                pass  # never overwrite established core fields
+                pass
             else:
                 c[k] = v
     return c
@@ -584,7 +572,6 @@ def validate_timetable() -> str:
     if not tt:
         return json.dumps({"status": "error", "message": "No schedule to validate."})
 
-    # Merge new + legacy constraint keys
     loc_restr  = {**c.get("room_restrictions", {}),     **c.get("location_restrictions", {})}
     ts_restr   = {**c.get("slot_restrictions", {}),     **c.get("time_slot_restrictions", {})}
     unavail    = {**c.get("professor_unavailability", {}), **c.get("assignee_unavailability", {})}
@@ -799,9 +786,9 @@ SOLVER WORKFLOW:
 5. Infeasible → explain which rules conflict, suggest how to fix
 
 DISCIPLINE:
-• Never call solve_timetable without extract_constraints first in this conversation
-• Never write a timetable/grid yourself when the user has given all the details — use the solver
-• If truly ambiguous, ask one clarifying question: "Have you decided all the details, or should I suggest them?"
+- Never call solve_timetable without extract_constraints first in this conversation
+- Never write a timetable/grid yourself when the user has given all the details — use the solver
+- If truly ambiguous, ask one clarifying question: "Have you decided all the details, or should I suggest them?"
 
 PERSONALITY: Warm, natural, never robotic. Vary phrasing every response.\
 """)
@@ -862,7 +849,6 @@ def _export_excel():
 # ── Sidebar ───────────────────────────────────────────────────────────────────────
 st.title("🤖 SLOT AI")
 
-# Inject CSS: remove red/orange from buttons; keep everything dark-theme neutral
 st.markdown("""
 <style>
 /* ── All sidebar buttons: dark-theme neutral ── */
@@ -881,21 +867,16 @@ section[data-testid="stSidebar"] button[kind="primary"] {
     border-color: rgba(255,255,255,0.35) !important;
     font-weight: 600 !important;
 }
-
-/* ── Password field: flush eye icon to right edge ── */
 section[data-testid="stSidebar"] [data-testid="stTextInput"] [data-baseweb="base-input"] {
     padding-right: 0 !important;
 }
 section[data-testid="stSidebar"] [data-testid="stTextInput"] [data-baseweb="base-input"] > div {
     padding-right: 0 !important;
 }
-
-/* ── Chat row: collapse gap between title button and ⋮ button ── */
 section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] {
     gap: 2px !important;
     align-items: center !important;
 }
-/* ── ⋮ popover button: compact, no extra padding ── */
 section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"]
     div[data-testid="stColumn"]:last-child button {
     padding: 2px 4px !important;
@@ -903,16 +884,15 @@ section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"]
     font-size: 16px !important;
     line-height: 1.2 !important;
 }
-
 </style>
 """, unsafe_allow_html=True)
 
 with st.sidebar:
     # ── Credentials ──
     st.header("🔑 Credentials")
-    key_in = st.text_input("Groq API Key", type="password",
-                            value=st.session_state.api_key, placeholder="gsk_...",
-                            help="Get a free key at console.groq.com")
+    key_in = st.text_input("Google AI API Key", type="password",
+                            value=st.session_state.api_key, placeholder="AIza...",
+                            help="Get a free key at aistudio.google.com")
     st.session_state.api_key = key_in
 
     st.divider()
@@ -1000,7 +980,7 @@ for msg in st.session_state.get("display_messages", []):
         st.markdown(msg["content"])
 
 if not st.session_state.api_key:
-    st.info("👈 Enter your Groq API key in the sidebar to get started.")
+    st.info("👈 Enter your Google AI API key in the sidebar to get started.")
     st.stop()
 
 if prompt := st.chat_input("What would you like to schedule today?"):
@@ -1008,7 +988,7 @@ if prompt := st.chat_input("What would you like to schedule today?"):
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    os.environ["GROQ_API_KEY"] = st.session_state.api_key
+    os.environ["GOOGLE_API_KEY"] = st.session_state.api_key
 
     tid = st.session_state.thread_id
     _tl.session_id = tid
@@ -1040,8 +1020,6 @@ if prompt := st.chat_input("What would you like to schedule today?"):
                 else:
                     reply = f"⚠️ Error ({type(e).__name__}): {err[:300]}"
 
-        # Parse tool outputs from the LangGraph message chain — runs on the main
-        # thread so it always works regardless of how tools were dispatched.
         if result:
             for m in result.get("messages", []):
                 raw = getattr(m, "content", "")
@@ -1062,7 +1040,6 @@ if prompt := st.chat_input("What would you like to schedule today?"):
                 if data.get("show_timetable") and st.session_state.timetable:
                     st.session_state.tt_updated = True
 
-        # Also sync history from _STORE (written inside tools, not returned in messages)
         sess = _STORE.get(tid, _STORE.get("_default", {}))
         if sess.get("timetable_history"):
             st.session_state.timetable_history = sess["timetable_history"]
@@ -1071,5 +1048,5 @@ if prompt := st.chat_input("What would you like to schedule today?"):
 
     st.session_state.display_messages.append({"role": "assistant", "content": reply})
     st.session_state.tt_updated = False
-    _save_current_chat()   # updates title in sidebar + persists state
-    st.rerun()             # refresh sidebar (title, View Timetable button state)
+    _save_current_chat()
+    st.rerun()
