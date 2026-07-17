@@ -27,7 +27,7 @@ An intelligent scheduling assistant that combines a conversational LLM with a **
 flowchart TD
     A([👤 User]) --> B["🖥️ Streamlit\nChat Interface"]
     B --> C["🧠 LangGraph\nAgent Loop"]
-    C --> D["⚡ Groq API\nllama-3.3-70b-versatile"]
+    C --> D["⚡ Google Gemini API\nGemini Flash Model"]
     D --> E{All details\nprovided?}
     E -- YES --> F["📐 OR-Tools\nCP-SAT Solver"]
     E -- NO --> G["💬 Conversational\nMode"]
@@ -43,9 +43,9 @@ flowchart TD
 | Component | Technology | Purpose |
 |---|---|---|
 | UI | Streamlit | Chat interface, schedule display, file export |
-| LLM | Groq — `llama-3.3-70b-versatile` | Conversational responses + tool-calling decisions |
+| LLM | Google — `Gemini Flash Model` | Conversational responses + tool-calling decisions |
 | Agent Framework | LangGraph (StateGraph + ToolNode) | Multi-turn agent with tool orchestration |
-| LLM Client | LangChain Groq | Groq API integration |
+| LLM Client | LangChain-google-genai | Google-genai API integration |
 | Constraint Solver | Google OR-Tools CP-SAT | Formally verified schedule generation |
 | Data / Export | Pandas, OpenPyXL, FPDF2 | Tabular display, Excel and PDF export |
 
@@ -58,7 +58,7 @@ flowchart LR
     U([👤 User]) --> ST["🖥️ Streamlit\nChat Interface"]
     ST --> LG["🧠 LangGraph\nAgent Loop"]
     LG <--> MEM["💾 MemorySaver"]
-    LG --> GROQ["⚡ Groq API\nllama-3.3-70b-versatile"]
+    LG --> Google["⚡ Google Gemini API\nGemini Flash Model"]
     GROQ -->|Conversational reply| OUT["🖥️ Streamlit\nSchedule View & Export"]
     GROQ -->|Solver mode| ORT["📐 OR-Tools\nCP-SAT"]
     ORT --> PD["🐼 Pandas"]
@@ -150,7 +150,7 @@ The solver uses domain-agnostic parameters that work for any scheduling domain:
 ### Prerequisites
 
 - Python 3.10+
-- A free [Groq API key](https://console.groq.com)
+- A free [Google Gemini API Key](https://aistudio.google.com/)
 
 ### Run Locally
 
@@ -171,7 +171,7 @@ Then open your browser at `http://localhost:8501`.
 ### Set API Key via Environment Variable
 
 ```bash
-export GROQ_API_KEY=gsk_...
+export GOOGLE_API_KEY=...
 streamlit run app.py
 ```
 
@@ -249,7 +249,7 @@ slot-ai/
 
 ```
 streamlit
-langchain-groq
+langchain-google-genai
 langchain-core
 langchain-community
 langgraph
@@ -287,7 +287,6 @@ The entire application lives in `app.py` for simplicity of deployment and demons
 
 - Schedules are stored **in-memory** per browser session — refreshing the page resets all data
 - The CP-SAT solver has a **30-second timeout** — very large or heavily constrained problems may time out
-- Groq API **rate limits** apply on the free tier (~30 requests/minute)
 - PDF export requires all text to be **Latin-1 encodable**
 
 ---
@@ -296,7 +295,7 @@ The entire application lives in `app.py` for simplicity of deployment and demons
 
 | Service | Purpose | Get Key |
 |---|---|---|
-| Groq | Serves `llama-3.3-70b-versatile` for conversational responses and tool-calling | [console.groq.com](https://console.groq.com) |
+| Google | Serves `Google Gemini Flash Model` for conversational responses and tool-calling | [aistudio.google.com](https://aistudio.google.com/) |
 
 Keys are entered via the sidebar and are **never stored** — they exist only within your active Streamlit session.
 
