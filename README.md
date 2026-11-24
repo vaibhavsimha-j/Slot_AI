@@ -4,6 +4,8 @@
 
 > Ask anything about scheduling. Get a formally constraint-satisfying schedule — or a smart conversational plan — instantly.
 
+> 🎯 **Try it instantly — no API key needed.** Open the [live app](https://slotai.streamlit.app), keep **Try Demo** selected, and click **🏫 College timetable (solver)** or **🏋️ Weekly gym plan**.
+
 An intelligent scheduling assistant that combines a conversational LLM with a **Google OR-Tools CP-SAT constraint solver** inside a clean Streamlit chat interface. It automatically decides whether to generate a plan using its own intelligence or to formally solve it as a constraint satisfaction problem — based on whether the user has provided all the details or wants the AI to figure them out.
 
 ---
@@ -297,7 +299,32 @@ The entire application lives in `app.py` for simplicity of deployment and demons
 |---|---|---|
 | Google | Serves `Gemini Flash Model` for conversational responses and tool-calling | [aistudio.google.com](https://aistudio.google.com/) |
 
-Keys are entered via the sidebar and are **never stored** — they exist only within your active Streamlit session.
+Keys are entered via the sidebar and are **never stored** — they exist only within your active Streamlit session. Each visitor's key is passed directly to their own agent (never through shared environment variables), so concurrent visitors never use each other's keys.
+
+### Model selection — auto-updating with fallback
+
+SLOT AI always tries Google's auto-updating `gemini-flash-latest` alias first, so it moves to new Gemini releases without code changes. New releases are often overloaded at launch, so a quick health check (re-run every 10 minutes) skips models that aren't answering, and each request also falls back down the list if a call fails. Every request has a 90-second timeout, so a slow model ends in a clear message instead of an endless spinner. The model in use is shown in the sidebar.
+
+Default order: `gemini-flash-latest` → `gemini-3-flash-preview` → `gemini-flash-lite-latest`. Override it from Streamlit Secrets without a code change:
+
+```toml
+GEMINI_MODEL = "gemini-flash-latest"                                       # primary
+GEMINI_FALLBACK_MODELS = "gemini-3-flash-preview,gemini-flash-lite-latest" # comma-separated
+```
+
+### Demo mode (for deployers)
+
+Demo mode lets visitors use the app owner's key. The key is read from **Streamlit Secrets** — never commit it to the repo. On Streamlit Community Cloud go to **Manage app → Settings → Secrets** (or locally create `.streamlit/secrets.toml`, which is git-ignored) and add:
+
+```toml
+DEMO_GEMINI_API_KEY = "AIza..."
+
+# Optional — usage caps (defaults shown)
+DEMO_SESSION_MESSAGES = 15   # chat messages per visitor session
+DEMO_DAILY_MESSAGES = 150    # chat messages per day, across all visitors (resets 00:00 UTC)
+```
+
+If the demo key isn't set, the demo option is hidden and the app works with user-supplied keys only. In demo mode only one agent run happens at a time, and failed requests don't count against a visitor's limit.
 
 ---
 

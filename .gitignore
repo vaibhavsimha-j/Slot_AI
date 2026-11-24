@@ -16,3 +16,7 @@ __pycache__/
 
 .DS_Store
 
+
+# Streamlit secrets (demo API key)
+
+.streamlit/secrets.toml

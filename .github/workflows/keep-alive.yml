@@ -5,29 +5,47 @@ on:
     - cron: '*/20 * * * *'
   workflow_dispatch:
 
+permissions:
+  actions: write   # lets the job re-enable this workflow so GitHub never auto-disables it
+
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
+      # GitHub disables scheduled workflows after 60 days of no repo activity.
+      # Re-enabling it via the API on every run resets that timer.
+      - name: Prevent GitHub from disabling this workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/keep-alive.yml/enable"
+
       - name: Install Playwright
         run: |
           pip install playwright
-          playwright install chromium
+          playwright install --with-deps chromium
 
-      - name: Ping all apps
+      - name: Visit app and wake it if asleep
         run: |
-          python3 -c "
+          python3 - <<'EOF'
+          import re
           from playwright.sync_api import sync_playwright
-          urls = [
-            'https://slotai.streamlit.app',
-          ]
+
+          urls = ['https://slotai.streamlit.app']
+
           with sync_playwright() as p:
-            browser = p.chromium.launch()
-            for url in urls:
-              page = browser.new_page()
-              page.goto(url, timeout=60000)
-              page.wait_for_timeout(5000)
-              print(f'Pinged {url}')
-              page.close()
-            browser.close()
-          "
+              browser = p.chromium.launch()
+              for url in urls:
+                  page = browser.new_page()
+                  page.goto(url, timeout=90000)
+                  wake = page.get_by_role('button', name=re.compile('get this app back up', re.I))
+                  try:
+                      wake.wait_for(timeout=15000)
+                      print(f'{url} was asleep - clicking wake button')
+                      wake.click()
+                      page.wait_for_timeout(90000)  # give the app time to boot
+                  except Exception:
+                      print(f'{url} is awake')
+                      page.wait_for_timeout(10000)  # stay connected so it counts as a visit
+                  page.close()
+              browser.close()
+          EOF

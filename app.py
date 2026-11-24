@@ -2,8 +2,9 @@
 pip install streamlit langchain-google-genai langgraph langchain-core ortools pydantic pandas openpyxl fpdf2
 streamlit run app.py
 """
-import os, json, copy, uuid, threading
-from datetime import datetime
+import os, json, copy, uuid, threading, time, logging
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from typing import Annotated, Any, Dict, List, Optional, TypedDict
 import streamlit as st
 import pandas as pd
@@ -19,8 +20,177 @@ from langgraph.checkpoint.memory import MemorySaver
 from ortools.sat.python import cp_model
 
 # ── Config ──────────────────────────────────────────────────────────────────────
-MODEL = "gemini-flash-latest"
 st.set_page_config(page_title="SLOT AI", layout="wide")
+
+
+def _secret(name: str, default=None):
+    """Read a Streamlit secret, falling back to an environment variable."""
+    try:
+        value = st.secrets.get(name)
+    except Exception:  # no secrets.toml configured
+        value = None
+    if value in (None, ""):
+        value = os.getenv(name, default)
+    return value
+
+
+def _int_secret(name: str, default: int) -> int:
+    try:
+        return int(_secret(name, default))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
+# ── Model routing ───────────────────────────────────────────────────────────────
+# Always try Google's auto-updating "latest" alias first, so the app moves to new
+# Gemini releases without code changes. Fresh releases are often overloaded at
+# launch, so a quick health check (re-run every few minutes) routes around models
+# that aren't answering, and every request also falls back down the list on error.
+# Override from Streamlit Secrets: GEMINI_MODEL (primary) / GEMINI_FALLBACK_MODELS
+# (comma-separated) — no code change needed when Google retires a model.
+MODEL = _secret("GEMINI_MODEL") or "gemini-flash-latest"
+MODEL_PREFERENCE = tuple(dict.fromkeys([
+    MODEL,
+    *[m.strip() for m in (_secret("GEMINI_FALLBACK_MODELS")
+                          or "gemini-3-flash-preview,gemini-flash-lite-latest").split(",") if m.strip()],
+]))
+LLM_TIMEOUT_SECONDS = 90   # per request, so a stuck model ends in an error instead of a spinner
+HEALTH_CHECK_TTL = 600     # seconds between model health checks
+
+
+@st.cache_data(ttl=HEALTH_CHECK_TTL, show_spinner=False)
+def _healthy_models(api_key: str, preference: tuple) -> tuple:
+    """`preference` minus models that aren't answering right now (order kept)."""
+    def answers(model: str) -> bool:
+        try:
+            ChatGoogleGenerativeAI(model=model, google_api_key=api_key, temperature=0,
+                                   timeout=20, max_retries=1).invoke("Reply with just: OK")
+            return True
+        except Exception:
+            return False
+    with ThreadPoolExecutor(len(preference)) as pool:
+        ok = list(pool.map(answers, preference))
+    healthy = tuple(m for m, good in zip(preference, ok) if good)
+    return healthy or preference  # nothing answered: keep trying all, errors surface normally
+
+
+# ── Demo mode ───────────────────────────────────────────────────────────────────
+# Lets visitors try SLOT AI on the owner's key, read from Streamlit Secrets (never
+# from the repo). Usage is capped per visitor session AND across the whole app per
+# UTC day, and only one demo agent run happens at a time.
+DEMO_KEY = _secret("DEMO_GEMINI_API_KEY") or ""
+DEMO_AVAILABLE = bool(DEMO_KEY)
+DEMO_SESSION_MESSAGES = _int_secret("DEMO_SESSION_MESSAGES", 15)
+DEMO_DAILY_MESSAGES = _int_secret("DEMO_DAILY_MESSAGES", 150)
+DEMO_RUN_TIMEOUT = 600     # seconds before a stuck "agent running" slot is freed
+MODE_DEMO = "🎯 Try Demo (no key needed)"
+MODE_OWN = "🔑 Use my own API key"
+
+
+class DemoUsage:
+    """App-wide demo counters shared by every session (thread-safe)."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._day = None
+        self._count = 0
+        self._run_started_at = None
+
+    def _roll_day(self) -> None:
+        today = datetime.now(timezone.utc).date()
+        if today != self._day:
+            self._day, self._count = today, 0
+
+    def remaining(self) -> int:
+        with self._lock:
+            self._roll_day()
+            return max(0, DEMO_DAILY_MESSAGES - self._count)
+
+    def try_use(self) -> bool:
+        with self._lock:
+            self._roll_day()
+            if self._count >= DEMO_DAILY_MESSAGES:
+                return False
+            self._count += 1
+            return True
+
+    def refund(self) -> None:
+        with self._lock:
+            self._count = max(0, self._count - 1)
+
+    def try_start_run(self) -> bool:
+        """One demo agent run at a time, so concurrent visitors can't trip Gemini's per-minute limit."""
+        with self._lock:
+            now = time.time()
+            if self._run_started_at and now - self._run_started_at < DEMO_RUN_TIMEOUT:
+                return False
+            self._run_started_at = now
+            return True
+
+    def finish_run(self) -> None:
+        with self._lock:
+            self._run_started_at = None
+
+
+@st.cache_resource
+def _demo_usage() -> DemoUsage:
+    return DemoUsage()
+
+
+def _demo_remaining() -> int:
+    session_left = DEMO_SESSION_MESSAGES - st.session_state.demo_messages_used
+    return max(0, min(session_left, _demo_usage().remaining()))
+
+
+def _demo_limit_message() -> str:
+    if st.session_state.demo_messages_used >= DEMO_SESSION_MESSAGES:
+        return (f"You've used all {DEMO_SESSION_MESSAGES} demo messages for this session. "
+                "To keep going, switch to **Use my own API key** — Google AI Studio keys are free.")
+    return ("The demo has reached today's message limit (it resets at midnight UTC). "
+            "You can still try SLOT AI right now with your own free Google AI key.")
+
+
+def _reserve_demo() -> str | None:
+    """Consume one demo message. Returns a message to show the visitor if they're out."""
+    if st.session_state.demo_messages_used >= DEMO_SESSION_MESSAGES or not _demo_usage().try_use():
+        return _demo_limit_message()
+    st.session_state.demo_messages_used += 1
+    return None
+
+
+def _release_demo() -> None:
+    """Give a demo message back when the run failed, so visitors aren't charged for errors."""
+    st.session_state.demo_messages_used = max(0, st.session_state.demo_messages_used - 1)
+    _demo_usage().refund()
+
+
+# One-click prompts that show off both agent modes
+EXAMPLE_PROMPTS = {
+    "🏫 College timetable (solver)": (
+        "Generate a weekly college timetable.\n\n"
+        "Professors and their subjects:\n"
+        "- Dr. Rao: Artificial Intelligence, Machine Learning\n"
+        "- Dr. Mehta: Data Structures\n"
+        "- Dr. Iyer: Computer Networks\n"
+        "- Dr. Kapoor: Operating Systems\n"
+        "- Dr. Nair: Database Systems\n"
+        "- Dr. Sen: Software Engineering\n\n"
+        "Rooms: Room A, Room B, Lab 1\n"
+        "Time slots: 09:00-10:00, 10:00-11:00, 11:30-12:30, 14:00-15:00\n"
+        "Days: Monday to Friday\n\n"
+        "Rules:\n"
+        "- Artificial Intelligence and Machine Learning only in the morning slots "
+        "(09:00-10:00, 10:00-11:00, 11:30-12:30)\n"
+        "- Computer Networks is never held in Lab 1\n"
+        "- Dr. Kapoor is unavailable on Friday\n"
+        "- No professor teaches more than 3 classes a day\n"
+        "- No professor can be in two rooms at the same time"
+    ),
+    "🏋️ Weekly gym plan": (
+        "I'm a beginner and want to build strength. Give me a weekly gym plan for "
+        "Monday, Wednesday and Friday, about 45 minutes per session, with exercises, sets and reps."
+    ),
+}
 
 # ── Session Init ────────────────────────────────────────────────────────────────
 _DEFAULTS = dict(
@@ -32,6 +202,8 @@ _DEFAULTS = dict(
     chat_sessions=[],
     active_thread_id="",
     renaming_chat_tid=None,
+    demo_messages_used=0,
+    active_model="",
 )
 for k, v in _DEFAULTS.items():
     st.session_state.setdefault(k, v)
@@ -105,10 +277,13 @@ def _get_thread_memory(tid: str) -> MemorySaver:
         st.session_state.thread_memories[tid] = MemorySaver()
     return st.session_state.thread_memories[tid]
 
-def _get_agent(tid: str):
-    if tid not in st.session_state.thread_agents:
-        st.session_state.thread_agents[tid] = _build_graph(_get_thread_memory(tid))
-    return st.session_state.thread_agents[tid]
+def _get_agent(tid: str, api_key: str, models: tuple):
+    # Rebuild when the key or healthy-model list changes; the chat memory is kept separately
+    sig = (api_key, models)
+    entry = st.session_state.thread_agents.get(tid)
+    if not entry or entry[0] != sig:
+        st.session_state.thread_agents[tid] = (sig, _build_graph(_get_thread_memory(tid), api_key, models))
+    return st.session_state.thread_agents[tid][1]
 
 def _clear_thread_memory(tid: str):
     st.session_state.thread_memories.pop(tid, None)
@@ -142,12 +317,20 @@ def _s() -> dict:
     })
 
 # ── Utilities ───────────────────────────────────────────────────────────────────
-def _get_llm(t: float = 0.0) -> ChatGoogleGenerativeAI:
-    # api_key is injected into os.environ["GOOGLE_API_KEY"] before every agent invocation
-    return ChatGoogleGenerativeAI(
-        model=MODEL,
-        temperature=t,
-    )
+def _get_llm(api_key: str, models: tuple, t: float = 0.0):
+    """Tool-bound LLM that tries `models` in order, falling back if a request fails.
+    The key is passed per visitor — never via os.environ, which all visitors share."""
+    llms = [
+        ChatGoogleGenerativeAI(
+            model=m,
+            google_api_key=api_key,
+            temperature=t,
+            timeout=LLM_TIMEOUT_SECONDS,
+            max_retries=2 if i == len(models) - 1 else 1,
+        ).bind_tools(TOOLS)
+        for i, m in enumerate(models)
+    ]
+    return llms[0].with_fallbacks(llms[1:]) if len(llms) > 1 else llms[0]
 
 def _cell(e):
     if isinstance(e, dict):
@@ -245,6 +428,20 @@ def _ortools_solve(constraints: dict) -> dict:
     if not all([n_p, n_ts, n_l, n_t]):
         return {"status": "error", "reason": "Missing core fields: assignees, locations, time_slots, periods."}
 
+    # The LLM often writes names differently in rules than in the lists, e.g.
+    # "Computer_Networks" vs "Computer Networks". Match names case/space/underscore-
+    # insensitively, otherwise those rules would be silently ignored.
+    def _n(name) -> str:
+        return " ".join(str(name).replace("_", " ").replace("-", " ").split()).lower()
+
+    task_ids      = {_n(t): i for i, t in enumerate(tasks)}
+    asgn_tasks_by = {_n(a): ts for a, ts in assignees.items()}
+    def _ids_of(asgn) -> list:
+        return [task_ids[_n(t)] for t in asgn_tasks_by.get(_n(asgn), []) if _n(t) in task_ids]
+    def _index(items: list, name):
+        names = [_n(i) for i in items]
+        return names.index(_n(name))  # raises ValueError if absent
+
     model = cp_model.CpModel()
     x = {
         (p, ts, l, t): model.NewBoolVar(f"x{p}{ts}{l}{t}")
@@ -269,9 +466,10 @@ def _ortools_solve(constraints: dict) -> dict:
     unavail = {**constraints.get("professor_unavailability", {}),
                **constraints.get("assignee_unavailability", {})}
     for asgn, unavail_periods in unavail.items():
-        ids = [tasks.index(t) for t in assignees.get(asgn, []) if t in tasks]
+        ids = _ids_of(asgn)
+        unavail_n = {_n(u) for u in unavail_periods}
         for p, period in enumerate(periods):
-            if period in unavail_periods:
+            if _n(period) in unavail_n:
                 for ts in range(n_ts):
                     for l in range(n_l):
                         for tid in ids:
@@ -280,10 +478,11 @@ def _ortools_solve(constraints: dict) -> dict:
     loc_restr = {**constraints.get("room_restrictions", {}),
                  **constraints.get("location_restrictions", {})}
     for task, forbidden in loc_restr.items():
-        if task in tasks:
-            tid = tasks.index(task)
+        if _n(task) in task_ids:
+            tid = task_ids[_n(task)]
+            forbidden_n = {_n(f) for f in forbidden}
             for l, loc in enumerate(locations):
-                if loc in forbidden:
+                if _n(loc) in forbidden_n:
                     for p in range(n_p):
                         for ts in range(n_ts):
                             model.Add(x[p, ts, l, tid] == 0)
@@ -291,10 +490,11 @@ def _ortools_solve(constraints: dict) -> dict:
     ts_restr = {**constraints.get("slot_restrictions", {}),
                 **constraints.get("time_slot_restrictions", {})}
     for task, allowed in ts_restr.items():
-        if task in tasks:
-            tid = tasks.index(task)
+        if _n(task) in task_ids:
+            tid = task_ids[_n(task)]
+            allowed_n = {_n(a) for a in allowed}
             for ts, slot in enumerate(time_slots):
-                if slot not in allowed:
+                if _n(slot) not in allowed_n:
                     for p in range(n_p):
                         for l in range(n_l):
                             model.Add(x[p, ts, l, tid] == 0)
@@ -302,7 +502,7 @@ def _ortools_solve(constraints: dict) -> dict:
     max_pp = {**constraints.get("max_slots_per_day", {}),
               **constraints.get("max_per_period", {})}
     for asgn, max_v in max_pp.items():
-        ids = [tasks.index(t) for t in assignees.get(asgn, []) if t in tasks]
+        ids = _ids_of(asgn)
         for p in range(n_p):
             model.Add(
                 sum(x[p, ts, l, tid]
@@ -317,10 +517,10 @@ def _ortools_solve(constraints: dict) -> dict:
 
     for fa in constraints.get("fixed_assignments", []):
         try:
-            p   = periods.index(fa.get("period") or fa.get("day"))
-            ts  = time_slots.index(fa.get("time_slot") or fa.get("slot"))
-            l   = locations.index(fa.get("location") or fa.get("room"))
-            tid = tasks.index(fa.get("task") or fa.get("subject"))
+            p   = _index(periods, fa.get("period") or fa.get("day"))
+            ts  = _index(time_slots, fa.get("time_slot") or fa.get("slot"))
+            l   = _index(locations, fa.get("location") or fa.get("room"))
+            tid = _index(tasks, fa.get("task") or fa.get("subject"))
             model.Add(x[p, ts, l, tid] == 1)
         except (ValueError, KeyError):
             pass
@@ -797,9 +997,10 @@ class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
 
 
-def _build_graph(memory: MemorySaver) -> Any:
+def _build_graph(memory: MemorySaver, api_key: str, models: tuple) -> Any:
+    llm = _get_llm(api_key, models)
+
     def agent_node(state: AgentState):
-        llm      = _get_llm().bind_tools(TOOLS)
         response = llm.invoke([_SYSTEM] + state["messages"])
         return {"messages": [response]}
 
@@ -889,11 +1090,27 @@ section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"]
 
 with st.sidebar:
     # ── Credentials ──
-    st.header("🔑 Credentials")
-    key_in = st.text_input("Google AI API Key", type="password",
-                            value=st.session_state.api_key, placeholder="AIza...",
-                            help="Get a free key at aistudio.google.com")
-    st.session_state.api_key = key_in
+    if DEMO_AVAILABLE:
+        st.header("🚀 Get Started")
+        mode = st.radio("Mode", [MODE_DEMO, MODE_OWN], key="mode", label_visibility="collapsed")
+    else:
+        mode = MODE_OWN
+    demo_mode = mode == MODE_DEMO
+
+    if demo_mode:
+        st.success("Demo mode is on — no API key needed.")
+        st.caption(f"🎯 Demo messages left: **{_demo_remaining()}**")
+        active_key = DEMO_KEY
+    else:
+        st.header("🔑 Credentials")
+        key_in = st.text_input("Google AI API Key", type="password",
+                                value=st.session_state.api_key, placeholder="AIza...",
+                                help="Get a free key at aistudio.google.com")
+        st.session_state.api_key = key_in
+        active_key = st.session_state.api_key
+
+    if active_key and st.session_state.active_model:
+        st.caption(f"🤖 Model: `{st.session_state.active_model}`")
 
     st.divider()
 
@@ -979,21 +1196,38 @@ for msg in st.session_state.get("display_messages", []):
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-if not st.session_state.api_key:
-    st.info("👈 Enter your Google AI API key in the sidebar to get started.")
+if not active_key:
+    st.info("👈 Enter your Google AI API key in the sidebar to get started"
+            + (" — or pick **Try Demo** to use it without a key." if DEMO_AVAILABLE else "."))
     st.stop()
 
-if prompt := st.chat_input("What would you like to schedule today?"):
+# ── Example prompts (shown on an empty chat) ──
+example_prompt = None
+if not st.session_state.get("display_messages"):
+    st.markdown("**New here? Try an example:**")
+    for _col, (_label, _text) in zip(st.columns(len(EXAMPLE_PROMPTS)), EXAMPLE_PROMPTS.items()):
+        if _col.button(_label, use_container_width=True):
+            example_prompt = _text
+
+demo_out = demo_mode and _demo_remaining() == 0
+if demo_out:
+    st.info(_demo_limit_message())
+
+typed_prompt = st.chat_input("What would you like to schedule today?", disabled=demo_out)
+if prompt := (typed_prompt or (None if demo_out else example_prompt)):
     st.session_state.display_messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    os.environ["GOOGLE_API_KEY"] = st.session_state.api_key
+    blocked = _reserve_demo() if demo_mode else None
+    if demo_mode and not blocked and not _demo_usage().try_start_run():
+        _release_demo()
+        blocked = "Another visitor is using the demo right now. Please try again in a minute."
 
     tid = st.session_state.thread_id
     _tl.session_id = tid
     _STORE[tid] = {
-        "api_key":           st.session_state.api_key,
+        "api_key":           active_key,
         "model":             MODEL,
         "constraints":       copy.deepcopy(st.session_state.constraints),
         "timetable":         copy.deepcopy(st.session_state.timetable),
@@ -1002,31 +1236,47 @@ if prompt := st.chat_input("What would you like to schedule today?"):
     }
 
     with st.chat_message("assistant"):
-        with st.spinner("Thinking…"):
-            try:
-                config = {"configurable": {"thread_id": tid}}
-                result = _get_agent(tid).invoke(
-                    {"messages": [HumanMessage(content=prompt)]},
-                    config,
-                )
-                last_msg = result["messages"][-1]
-                content = last_msg.content
-                if isinstance(content, list):
-                    reply = " ".join(
-                        block.get("text", "") for block in content
-                        if isinstance(block, dict) and block.get("type") == "text"
+        result = None
+        if blocked:
+            reply = f"⚠️ {blocked}"
+        else:
+            with st.spinner("Thinking…"):
+                try:
+                    models = _healthy_models(active_key, MODEL_PREFERENCE)
+                    st.session_state.active_model = models[0]
+                    config = {"configurable": {"thread_id": tid}}
+                    result = _get_agent(tid, active_key, models).invoke(
+                        {"messages": [HumanMessage(content=prompt)]},
+                        config,
                     )
-                else:
-                    reply = content
-            except Exception as e:
-                err = str(e)
-                result = None
-                if "429" in err or "rate_limit" in err.lower():
-                    reply = "⚠️ Rate limit hit. Please wait ~1 minute and try again."
-                elif "tool_use_failed" in err or "failed_generation" in err:
-                    reply = "⚠️ The model failed to call a tool correctly. Try rephrasing your request more simply."
-                else:
-                    reply = f"⚠️ Error ({type(e).__name__}): {err[:300]}"
+                    last_msg = result["messages"][-1]
+                    content = last_msg.content
+                    if isinstance(content, list):
+                        reply = " ".join(
+                            block.get("text", "") for block in content
+                            if isinstance(block, dict) and block.get("type") == "text"
+                        )
+                    else:
+                        reply = content
+                except Exception as e:
+                    err = str(e)
+                    result = None
+                    if demo_mode:
+                        _release_demo()
+                        logging.exception("Demo agent run failed")
+                    if "429" in err or "rate_limit" in err.lower() or "resource_exhausted" in err.lower():
+                        reply = "⚠️ Rate limit hit. Please wait ~1 minute and try again."
+                    elif any(s in err.lower() for s in ("503", "504", "unavailable", "deadline", "high demand", "timed out", "timeout")):
+                        reply = "⚠️ Google's AI models are overloaded right now. Please try again in a few minutes."
+                    elif "tool_use_failed" in err or "failed_generation" in err:
+                        reply = "⚠️ The model failed to call a tool correctly. Try rephrasing your request more simply."
+                    elif demo_mode:
+                        reply = "⚠️ Something went wrong while running the demo. Please try again in a minute."
+                    else:
+                        reply = f"⚠️ Error ({type(e).__name__}): {err[:300]}"
+                finally:
+                    if demo_mode:
+                        _demo_usage().finish_run()
 
         if result:
             for m in result.get("messages", []):
