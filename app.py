@@ -2,7 +2,7 @@
 pip install streamlit langchain-google-genai langgraph langchain-core ortools pydantic pandas openpyxl fpdf2
 streamlit run app.py
 """
-import os, json, copy, uuid, threading, time, logging
+import os, json, copy, uuid, threading, time, logging, contextvars
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Annotated, Any, Dict, List, Optional, TypedDict
@@ -303,12 +303,20 @@ def _delete_chat(tid: str):
             _new_chat()
 
 # ── Session store ────────────────────────────────────────────────────────────────
-_tl    = threading.local()
-_STORE: dict[str, dict] = {}
+@st.cache_resource
+def _session_registry():
+    """Shared across Streamlit reruns (module globals are re-created on every run, but
+    cached agents keep calling the tools from the run that built them), so the app and
+    the tools always see the same store. The session id lives in a ContextVar rather than
+    threading.local because LangGraph runs tools on worker threads, and only contextvars
+    are copied into them."""
+    return {}, contextvars.ContextVar("slot_ai_session_id", default="")
+
+_STORE, _SESSION_ID = _session_registry()
 
 def _s() -> dict:
     """Return the mutable state dict for the current session."""
-    sid = getattr(_tl, "session_id", "")
+    sid = _SESSION_ID.get()
     if not sid or sid not in _STORE:
         sid = "_default"
     return _STORE.setdefault(sid, {
@@ -429,10 +437,11 @@ def _ortools_solve(constraints: dict) -> dict:
         return {"status": "error", "reason": "Missing core fields: assignees, locations, time_slots, periods."}
 
     # The LLM often writes names differently in rules than in the lists, e.g.
-    # "Computer_Networks" vs "Computer Networks". Match names case/space/underscore-
-    # insensitively, otherwise those rules would be silently ignored.
+    # "Computer_Networks" vs "Computer Networks", or "Dr_Sen" vs "Dr. Sen". Match names
+    # ignoring case, spaces, underscores, dashes and dots, otherwise those rules would be
+    # silently ignored.
     def _n(name) -> str:
-        return " ".join(str(name).replace("_", " ").replace("-", " ").split()).lower()
+        return " ".join(str(name).replace("_", " ").replace("-", " ").replace(".", " ").split()).lower()
 
     task_ids      = {_n(t): i for i, t in enumerate(tasks)}
     asgn_tasks_by = {_n(a): ts for a, ts in assignees.items()}
@@ -677,10 +686,11 @@ def solve_timetable() -> str:
             sess.setdefault("timetable_history", []).append({
                 "version":     len(sess.get("timetable_history", [])) + 1,
                 "timetable":   copy.deepcopy(existing),
-                "constraints": copy.deepcopy(c),
+                "constraints": copy.deepcopy(sess.get("timetable_constraints") or c),
                 "timestamp":   datetime.now().isoformat(),
             })
         sess["timetable"]   = result["timetable"]
+        sess["timetable_constraints"] = copy.deepcopy(c)
         sess["tt_updated"]  = True
         return json.dumps({
             "status":        "success",
@@ -745,10 +755,11 @@ def edit_timetable(
             sess.setdefault("timetable_history", []).append({
                 "version":     len(sess.get("timetable_history", [])) + 1,
                 "timetable":   copy.deepcopy(existing),
-                "constraints": copy.deepcopy(merged),
+                "constraints": copy.deepcopy(sess.get("timetable_constraints") or merged),
                 "timestamp":   datetime.now().isoformat(),
             })
         sess["timetable"]   = result["timetable"]
+        sess["timetable_constraints"] = copy.deepcopy(merged)
         sess["tt_updated"]  = True
         return json.dumps({
             "status":        "success",
@@ -845,13 +856,16 @@ def get_timetable_history() -> str:
     return json.dumps({
         "status":  "ok",
         "count":   len(history),
+        "note":    ("Each version is an EARLIER timetable, saved when a newer one replaced it "
+                    "(timestamp = when it was replaced). Version 0 is the current timetable."),
         "versions": [
             {
                 "version":    e["version"],
                 "timestamp":  e["timestamp"],
-                "professors": list(e["constraints"].get("teachers", {}).keys()),
+                "assignees":  list((e["constraints"].get("assignees")
+                                    or e["constraints"].get("teachers", {})).keys()),
                 "days":       list(e["timetable"].keys()),
-                "rooms":      e["constraints"].get("rooms", []),
+                "locations":  e["constraints"].get("locations") or e["constraints"].get("rooms", []),
             }
             for e in history
         ],
@@ -879,16 +893,23 @@ def compare_timetables(version_a: int, version_b: int) -> str:
     if t1 is None or t2 is None:
         return json.dumps({"status": "error", "message": f"Version {version_a} or {version_b} not found."})
 
+    def _label(cell) -> str:
+        # Solver cells are {"task", "assignee"}; older versions used {"subject", "teacher"}
+        if not isinstance(cell, dict):
+            return "—"
+        what = cell.get("task") or cell.get("subject") or "—"
+        who  = cell.get("assignee") or cell.get("teacher")
+        return f"{what} ({who})" if who else what
+
     changes = []
     for day in sorted(set(list(t1) + list(t2))):
         for slot in sorted(set(list(t1.get(day, {})) + list(t2.get(day, {})))):
             r1 = t1.get(day, {}).get(slot, {})
             r2 = t2.get(day, {}).get(slot, {})
             for room in sorted(set(list(r1) + list(r2))):
-                s1 = r1.get(room, {}).get("subject", "—") if isinstance(r1.get(room), dict) else "—"
-                s2 = r2.get(room, {}).get("subject", "—") if isinstance(r2.get(room), dict) else "—"
+                s1, s2 = _label(r1.get(room)), _label(r2.get(room))
                 if s1 != s2:
-                    changes.append(f"{day}  |  {slot}  |  Room {room}:  {s1} → {s2}")
+                    changes.append(f"{day}  |  {slot}  |  {room}:  {s1} → {s2}")
 
     return json.dumps({
         "status":  "ok",
@@ -1225,12 +1246,14 @@ if prompt := (typed_prompt or (None if demo_out else example_prompt)):
         blocked = "Another visitor is using the demo right now. Please try again in a minute."
 
     tid = st.session_state.thread_id
-    _tl.session_id = tid
+    _SESSION_ID.set(tid)
     _STORE[tid] = {
         "api_key":           active_key,
         "model":             MODEL,
         "constraints":       copy.deepcopy(st.session_state.constraints),
         "timetable":         copy.deepcopy(st.session_state.timetable),
+        # rules the current timetable was solved with, archived alongside it if it's replaced
+        "timetable_constraints": copy.deepcopy(st.session_state.constraints),
         "timetable_history": list(st.session_state.timetable_history),
         "tt_updated":        False,
     }
