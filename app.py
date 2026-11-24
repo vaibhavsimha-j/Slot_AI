@@ -2,7 +2,7 @@
 pip install streamlit langchain-google-genai langgraph langchain-core ortools pydantic pandas openpyxl fpdf2
 streamlit run app.py
 """
-import os, json, copy, uuid, threading, time, logging, contextvars
+import os, re, json, copy, uuid, threading, time, logging, contextvars
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Annotated, Any, Dict, List, Optional, TypedDict
@@ -13,6 +13,7 @@ from io import BytesIO
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableLambda
 from langgraph.graph import StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
@@ -56,6 +57,34 @@ MODEL_PREFERENCE = tuple(dict.fromkeys([
 ]))
 LLM_TIMEOUT_SECONDS = 90   # per request, so a stuck model ends in an error instead of a spinner
 HEALTH_CHECK_TTL = 600     # seconds between model health checks
+MAX_RATE_LIMIT_WAITS = 6   # per call, when a model is briefly over its per-minute quota
+
+
+def _per_minute_wait(exc: Exception) -> float | None:
+    """Seconds to wait if `exc` is a short-lived per-minute rate limit, else None.
+    Per-day quota exhaustion and overload (503/504) return None: those need a
+    different model, not a pause."""
+    text = str(exc)
+    if "429" not in text or "per day" in text.lower():
+        return None
+    if "per minute" not in text.lower() and "retry in" not in text.lower():
+        return None
+    match = re.search(r"retry in ([\d.]+)s", text)
+    return min(float(match.group(1)) + 1, 60) if match else 20
+
+
+def _paced(runnable):
+    """Wrap a model so per-minute rate limits are waited out instead of failing."""
+    def call(payload):
+        for attempt in range(MAX_RATE_LIMIT_WAITS + 1):
+            try:
+                return runnable.invoke(payload)
+            except Exception as exc:
+                wait = _per_minute_wait(exc)
+                if wait is None or attempt == MAX_RATE_LIMIT_WAITS:
+                    raise
+                time.sleep(wait)
+    return RunnableLambda(call)
 
 
 @st.cache_data(ttl=HEALTH_CHECK_TTL, show_spinner=False)
@@ -66,8 +95,9 @@ def _healthy_models(api_key: str, preference: tuple) -> tuple:
             ChatGoogleGenerativeAI(model=model, google_api_key=api_key, temperature=0,
                                    timeout=20, max_retries=1).invoke("Reply with just: OK")
             return True
-        except Exception:
-            return False
+        except Exception as exc:
+            # briefly over the per-minute quota = up; overloaded or out for the day = skip
+            return _per_minute_wait(exc) is not None
     with ThreadPoolExecutor(len(preference)) as pool:
         ok = list(pool.map(answers, preference))
     healthy = tuple(m for m, good in zip(preference, ok) if good)
@@ -329,13 +359,13 @@ def _get_llm(api_key: str, models: tuple, t: float = 0.0):
     """Tool-bound LLM that tries `models` in order, falling back if a request fails.
     The key is passed per visitor — never via os.environ, which all visitors share."""
     llms = [
-        ChatGoogleGenerativeAI(
+        _paced(ChatGoogleGenerativeAI(
             model=m,
             google_api_key=api_key,
             temperature=t,
             timeout=LLM_TIMEOUT_SECONDS,
             max_retries=2 if i == len(models) - 1 else 1,
-        ).bind_tools(TOOLS)
+        ).bind_tools(TOOLS))
         for i, m in enumerate(models)
     ]
     return llms[0].with_fallbacks(llms[1:]) if len(llms) > 1 else llms[0]
@@ -1287,7 +1317,10 @@ if prompt := (typed_prompt or (None if demo_out else example_prompt)):
                     if demo_mode:
                         _release_demo()
                         logging.exception("Demo agent run failed")
-                    if "429" in err or "rate_limit" in err.lower() or "resource_exhausted" in err.lower():
+                    if "per day" in err.lower():
+                        reply = ("⚠️ The AI models have reached Google's free-tier daily limit. "
+                                 "Please try again later — or use your own free Google AI key.")
+                    elif "429" in err or "rate_limit" in err.lower() or "resource_exhausted" in err.lower():
                         reply = "⚠️ Rate limit hit. Please wait ~1 minute and try again."
                     elif any(s in err.lower() for s in ("503", "504", "unavailable", "deadline", "high demand", "timed out", "timeout")):
                         reply = "⚠️ Google's AI models are overloaded right now. Please try again in a few minutes."
